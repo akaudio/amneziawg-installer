@@ -1,14 +1,8 @@
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 ![Status](https://img.shields.io/badge/Status-Active-success)
-![Version](https://img.shields.io/badge/Version-1.1-brightgreen)
 
 # Руководство по установке и управлению AmneziaWG с помощью скриптов
-
-## Быстрый старт
-
-```bash
-wget -O - https://raw.githubusercontent.com/bivlked/amneziawg-installer/refs/heads/main/install_amneziawg.sh | sudo bash
 
 ## Введение
 
