@@ -5,6 +5,16 @@
 
 # Руководство по установке и управлению AmneziaWG с помощью скриптов
 
+![Быстрый старт](https://img.shields.io/badge/Быстрый_старт-Установка-brightgreen)
+![Быстрый старт](https://img.shields.io/badge/Быстрый_старт-Инструкция-brightgreen)
+![Quick Start](https://img.shields.io/badge/Quick_Start-Guide-informational)
+![Install](https://img.shields.io/badge/🚀_Быстрый_старт-Установка-success)
+
+## Быстрый старт
+
+```bash
+wget -O - https://raw.githubusercontent.com/bivlked/amneziawg-installer/refs/heads/main/install_amneziawg.sh | sudo bash
+
 ## Введение
 
 Это руководство описывает процесс установки VPN-сервера AmneziaWG на чистую систему Ubuntu Server 24.04 LTS Minimal, а также последующее управление пользователями (пирами) с использованием предоставленных скриптов (`install_amneziawg.sh` и `manage_amneziawg.sh`).
