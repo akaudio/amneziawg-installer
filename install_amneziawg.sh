@@ -1,10 +1,11 @@
 #!/bin/bash
+
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG на Ubuntu 24.04 LTS Minimal
-# Автор: Claude (адаптировано на основе обсуждения с пользователем @bivlked)
-# Версия: 1.2
+# Автор: @bivlked
+# Версия: 1.3
 # Дата: 2025-04-14
-# Репозиторий: https://github.com/bivlked/amneziawg-installer (Пример)
+# Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
@@ -12,7 +13,9 @@
 set -o pipefail # Выход, если команда в пайпе завершается с ошибкой
 
 # Директория для файлов скрипта, логов, конфигов пользователя и состояния
-AWG_DIR="$HOME/awg"
+# Используем /root/awg, т.к. скрипт запускается через sudo bash
+# $HOME может указывать на дом. директорию пользователя, вызвавшего sudo, а не root
+AWG_DIR="/root/awg"
 # Файл для хранения пользовательских настроек (порт, подсеть)
 CONFIG_FILE="$AWG_DIR/setup.conf"
 # Файл для хранения текущего шага выполнения
@@ -34,16 +37,20 @@ log_msg() {
     local message="$2"
     local timestamp
     timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    local log_entry="[$timestamp] $type: $message"
+    # Экранируем '%' для printf
+    local safe_message
+    safe_message=$(echo "$message" | sed 's/%/%%/g')
+    local log_entry="[$timestamp] $type: $safe_message"
 
-    # Запись в лог-файл
-    echo "$log_entry" >> "$LOG_FILE"
+    # Запись в лог-файл (создаем директорию, если нужно)
+    mkdir -p "$(dirname "$LOG_FILE")"
+    printf "%s\n" "$log_entry" >> "$LOG_FILE"
 
     # Вывод на экран (stderr для ошибок/предупреждений)
     if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
-        echo "$log_entry" >&2
+        printf "%s\n" "$log_entry" >&2
     else
-        echo "$log_entry"
+        printf "%s\n" "$log_entry"
     fi
 }
 
@@ -53,7 +60,8 @@ log_error() { log_msg "ERROR" "$1"; }
 
 # Функция для выхода при ошибке
 die() {
-    log_error "$1"
+    log_error "КРИТИЧЕСКАЯ ОШИБКА: $1"
+    log_error "Установка прервана. Пожалуйста, проверьте лог $LOG_FILE для деталей."
     exit 1
 }
 
@@ -61,6 +69,8 @@ die() {
 # Функция для записи следующего шага
 update_state() {
     local next_step=$1
+    # Убедимся, что директория существует
+    mkdir -p "$(dirname "$STATE_FILE")"
     echo "$next_step" > "$STATE_FILE" || die "Не удалось записать состояние в $STATE_FILE"
     log "Состояние обновлено: следующий шаг - $next_step"
 }
@@ -69,16 +79,17 @@ update_state() {
 request_reboot() {
     local next_step_after_reboot=$1
     update_state "$next_step_after_reboot" # Записываем шаг ПОСЛЕ перезагрузки
-    echo "" >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE" # Пустая строка для визуального разделения в логе
     log_warn "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     log_warn "!!! ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА СИСТЕМЫ !!!"
-    log_warn "!!! После перезагрузки, пожалуйста, запустите этот скрипт снова:"
-    log_warn "!!! sudo bash $0"
+    log_warn "!!! После перезагрузки, пожалуйста, запустите этот скрипт снова ОДНОЙ КОМАНДОЙ:"
+    log_warn "!!! wget -O - https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh | sudo bash"
     log_warn "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     echo "" >> "$LOG_FILE"
     # Спросить пользователя, если скрипт запущен интерактивно
-    if [[ -t 0 ]]; then # Проверка, подключен ли stdin к терминалу
-      read -p "Перезагрузить сейчас? [y/N]: " confirm_reboot
+    if [[ -t 0 && -t 1 ]]; then # Проверка, что stdin и stdout подключены к терминалу
+      # Читаем явно с терминала, чтобы избежать проблем с пайпом
+      read -p "Перезагрузить сейчас? [y/N]: " confirm_reboot < /dev/tty
       if [[ "$confirm_reboot" =~ ^[Yy]$ ]]; then
           log "Инициирована перезагрузка по команде пользователя..."
           # Даем системе немного времени перед перезагрузкой
@@ -91,7 +102,8 @@ request_reboot() {
           exit 1
       fi
     else
-      log_warn "Скрипт запущен неинтерактивно. Перезагрузка не будет выполнена автоматически."
+      log_warn "Скрипт запущен неинтерактивно или ввод/вывод перенаправлен."
+      log_warn "Перезагрузка не будет выполнена автоматически."
       log_warn "Пожалуйста, перезагрузите систему вручную и запустите скрипт снова."
       exit 1 # Выход, чтобы избежать продолжения без перезагрузки
     fi
@@ -100,6 +112,8 @@ request_reboot() {
 # --- Шаг 0: Инициализация и Настройка Переменных ---
 initialize_setup() {
     # Перенаправляем весь вывод функций в лог (и на экран через log_msg)
+    # Делаем это здесь, чтобы лог создавался в правильном месте
+    mkdir -p "$AWG_DIR" || die "Не удалось создать рабочую директорию $AWG_DIR"
     exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
 
     log "--- НАЧАЛО УСТАНОВКИ / ПРОВЕРКА СОСТОЯНИЯ ---"
@@ -108,8 +122,7 @@ initialize_setup() {
     # Проверка прав root
     if [ "$(id -u)" -ne 0 ]; then die "Скрипт должен быть запущен с правами root (через sudo)."; fi
 
-    # Создание рабочей директории
-    mkdir -p "$AWG_DIR" || die "Не удалось создать рабочую директорию $AWG_DIR"
+    # Переходим в рабочую директорию (уже создана)
     cd "$AWG_DIR" || die "Не удалось перейти в рабочую директорию $AWG_DIR"
     log "Рабочая директория: $AWG_DIR"
     log "Лог файл: $LOG_FILE"
@@ -131,28 +144,30 @@ initialize_setup() {
         log "Настройки загружены."
     else
         log "Файл конфигурации $CONFIG_FILE не найден. Запрос настроек у пользователя."
-        # Запрос порта у пользователя
-        read -p "Введите UDP порт для AmneziaWG (рекомендуется 1024-65535) [${default_port}]: " input_port
+        # Запрос порта у пользователя (читаем с терминала!)
+        read -p "Введите UDP порт для AmneziaWG (рекомендуется 1024-65535) [${default_port}]: " input_port < /dev/tty
         AWG_PORT=${input_port:-$default_port}
         if ! [[ "$AWG_PORT" =~ ^[0-9]+$ ]] || [ "$AWG_PORT" -lt 1024 ] || [ "$AWG_PORT" -gt 65535 ]; then
             die "Некорректный номер порта: $AWG_PORT. Введите число от 1024 до 65535."
         fi
 
-        # Запрос подсети у пользователя
-        read -p "Введите подсеть туннеля (например, 10.x.x.1/24) [${default_subnet}]: " input_subnet
+        # Запрос подсети у пользователя (читаем с терминала!)
+        read -p "Введите подсеть туннеля (например, 10.x.x.1/24) [${default_subnet}]: " input_subnet < /dev/tty
         AWG_TUNNEL_SUBNET=${input_subnet:-$default_subnet}
         if ! [[ "$AWG_TUNNEL_SUBNET" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
-            die "Некорректный формат подсети: $AWG_TUNNEL_SUBNET. Пример: 10.9.9.1/24."
+            # Используем printf для безопасного вывода потенциально опасной строки
+            printf "%s\n" "ERROR: Некорректный формат подсети: '$AWG_TUNNEL_SUBNET'. Пример: 10.9.9.1/24." >&2
+            # Не используем die здесь, чтобы не выводить потенциально опасную строку еще раз
+            exit 1
         fi
 
         # Сохраняем введенные/дефолтные настройки в файл
         log "Сохранение настроек в $CONFIG_FILE..."
-        cat > "$CONFIG_FILE" << EOF || die "Не удалось записать файл конфигурации $CONFIG_FILE"
-# Конфигурация установки AmneziaWG
-# Этот файл генерируется автоматически. Не редактируйте вручную без необходимости.
-export AWG_PORT=${AWG_PORT}
-export AWG_TUNNEL_SUBNET="${AWG_TUNNEL_SUBNET}"
-EOF
+        # Используем printf для большей надежности при записи
+        printf "%s\n" "# Конфигурация установки AmneziaWG" > "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
+        printf "%s\n" "# Этот файл генерируется автоматически." >> "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
+        printf "export AWG_PORT=%s\n" "${AWG_PORT}" >> "$CONFIG_FILE" || die "Не удалось записать порт в $CONFIG_FILE"
+        printf "export AWG_TUNNEL_SUBNET=%s\n" "${AWG_TUNNEL_SUBNET}" >> "$CONFIG_FILE" || die "Не удалось записать подсеть в $CONFIG_FILE"
         log "Настройки сохранены."
     fi
 
@@ -166,7 +181,6 @@ EOF
     # Загружаем состояние (номер следующего шага)
     if [[ -f "$STATE_FILE" ]]; then
         current_step=$(cat "$STATE_FILE")
-        # Проверка, что в файле число
         if ! [[ "$current_step" =~ ^[0-9]+$ ]]; then
             log_warn "Файл состояния $STATE_FILE поврежден. Начинаем установку с начала."
             current_step=1
@@ -177,12 +191,13 @@ EOF
     else
         current_step=1
         log "Файл состояния не найден. Начало установки с шага 1."
-        update_state 1 # Создаем файл состояния с шагом 1
+        update_state 1
     fi
     log "Шаг 0 завершен."
 }
 
 # --- Функции для каждого шага установки ---
+# (Шаги 1-5 остаются такими же, как в предыдущей версии, с улучшенным логированием/проверками)
 
 # ШАГ 1: Обновление системы, отключение IPv6, включение IP Forwarding
 step1_update_system_and_networking() {
@@ -191,10 +206,13 @@ step1_update_system_and_networking() {
     log "Обновление списка пакетов..."
     apt update -y || die "Ошибка при apt update."
     log "Обновление системы (может занять время)..."
+    # DEBIAN_FRONTEND=noninteractive предотвращает большинство диалогов apt
     DEBIAN_FRONTEND=noninteractive apt full-upgrade -y || die "Ошибка при apt full-upgrade."
     log "Система обновлена."
 
     log "Отключение IPv6..."
+    # Используем временный файл и mv для атомарного обновления, если нужно
+    # Но tee -a достаточно надежен для этого случая
     {
         grep -qxF 'net.ipv6.conf.all.disable_ipv6 = 1' /etc/sysctl.conf || echo 'net.ipv6.conf.all.disable_ipv6 = 1'
         grep -qxF 'net.ipv6.conf.default.disable_ipv6 = 1' /etc/sysctl.conf || echo 'net.ipv6.conf.default.disable_ipv6 = 1'
@@ -224,11 +242,13 @@ step2_install_amnezia() {
     log "Проверка и включение deb-src репозиториев в $sources_file..."
     if [ ! -f "$sources_file" ]; then die "Файл $sources_file не найден. Невозможно проверить deb-src."; fi
 
+    # Проверяем, есть ли строки ТОЛЬКО с 'Types: deb'
     if grep -q "^Types: deb$" "$sources_file"; then
         log "Обнаружены строки 'Types: deb' без 'deb-src'. Включение..."
         local backup_file="${sources_file}.bak-$(date +%F_%T)"
         cp "$sources_file" "$backup_file" || log_warn "Не удалось создать резервную копию $backup_file"
-        sed -i.bak '/^Types: deb$/s/Types: deb/Types: deb deb-src/' "$sources_file" || die "Ошибка при модификации $sources_file с помощью sed."
+        # Используем -i без суффикса для редактирования на месте (GNU sed)
+        sed -i '/^Types: deb$/s/Types: deb/Types: deb deb-src/' "$sources_file" || die "Ошибка при модификации $sources_file с помощью sed."
         # Проверка после модификации
         if grep -q "^Types: deb$" "$sources_file"; then
              log_warn "Не удалось автоматически включить все deb-src. Возможно, требуется ручное редактирование $sources_file."
@@ -238,8 +258,7 @@ step2_install_amnezia() {
              apt update -y || die "Ошибка при apt update после включения deb-src."
         fi
     elif ! grep -q "Types: deb deb-src" "$sources_file"; then
-         log_warn "Не найдены строки 'Types: deb deb-src' или 'Types: deb' в $sources_file. Проверьте конфигурацию APT."
-         # Не выходим, т.к. формат может быть другим, но предупреждаем
+         log_warn "Не найдены строки 'Types: deb deb-src' или 'Types: deb' в $sources_file. Проверьте конфигурацию APT. Установка может завершиться ошибкой."
     else
         log "deb-src репозитории уже включены."
         apt update -y # Обновим на всякий случай
@@ -247,9 +266,17 @@ step2_install_amnezia() {
 
     # Добавление PPA Amnezia
     log "Добавление PPA репозитория Amnezia..."
-    add-apt-repository -y ppa:amnezia/ppa || die "Не удалось добавить PPA amnezia/ppa."
-    log "Обновление списка пакетов после добавления PPA..."
-    apt update -y || die "Ошибка при apt update после добавления PPA."
+    # Проверяем, существует ли уже файл PPA
+    if [ ! -f "/etc/apt/sources.list.d/amnezia-ubuntu-ppa-$(lsb_release -sc).sources" ] && \
+       [ ! -f "/etc/apt/sources.list.d/amnezia-ubuntu-ppa-$(lsb_release -sc).list" ]; then
+        add-apt-repository -y ppa:amnezia/ppa || die "Не удалось добавить PPA amnezia/ppa."
+        log "Обновление списка пакетов после добавления PPA..."
+        apt update -y || die "Ошибка при apt update после добавления PPA."
+    else
+        log "PPA amnezia/ppa уже добавлен."
+        # Обновление все равно нужно, чтобы получить последние версии пакетов
+        apt update -y || die "Ошибка при apt update."
+    fi
 
     # Установка необходимых пакетов
     log "Установка AmneziaWG (DKMS), инструментов и зависимостей для сборки..."
@@ -257,6 +284,13 @@ step2_install_amnezia() {
         amneziawg-dkms amneziawg-tools wireguard-tools
         dkms "linux-headers-$(uname -r)" build-essential dpkg-dev
     )
+    # Проверяем наличие headers для текущего ядра
+    if ! dpkg -s "linux-headers-$(uname -r)" &> /dev/null; then
+        log_warn "Заголовки для текущего ядра linux-headers-$(uname -r) не найдены. Попытка установить generic версию..."
+        packages_to_install+=( "linux-headers-generic" )
+    fi
+
+    # Устанавливаем или обновляем пакеты
     if ! DEBIAN_FRONTEND=noninteractive apt install -y "${packages_to_install[@]}"; then
         log_warn "Ошибка при установке пакетов: ${packages_to_install[*]}. Попытка исправить..."
         if ! DEBIAN_FRONTEND=noninteractive apt --fix-broken install -y; then
@@ -269,6 +303,17 @@ step2_install_amnezia() {
     fi
     log "Пакеты AmneziaWG и зависимости успешно установлены."
 
+    # Проверка статуса DKMS модуля
+    log "Проверка статуса DKMS модуля amneziawg..."
+    if ! dkms status | grep -q 'amneziawg.*installed'; then
+        log_warn "DKMS статус не показывает модуль amneziawg как 'installed'. Проверьте логи DKMS."
+        log_warn "Вывод 'dkms status': $(dkms status || echo 'Ошибка получения статуса')"
+        # Не выходим, т.к. модуль мог установиться и без DKMS, но предупреждаем
+    else
+        log "DKMS статус показывает модуль amneziawg как установленный."
+    fi
+
+
     log "Шаг 2 успешно завершен."
     request_reboot 3
 }
@@ -277,7 +322,7 @@ step2_install_amnezia() {
 step3_check_module() {
     update_state 3
     log "### ШАГ 3: Проверка загрузки модуля ядра AmneziaWG ###"
-    if lsmod | grep -q -w amneziawg; then # -w для точного совпадения слова
+    if lsmod | grep -q -w amneziawg; then
         log "Модуль amneziawg уже загружен."
     else
         log "Модуль amneziawg не найден в lsmod. Попытка загрузить вручную..."
@@ -285,18 +330,22 @@ step3_check_module() {
         log "Модуль успешно загружен через modprobe."
         # Добавляем его в автозагрузку, если пришлось грузить вручную
         local modules_file="/etc/modules-load.d/amneziawg.conf"
+        # Создаем директорию, если ее нет
+        mkdir -p "$(dirname "$modules_file")"
         if ! grep -qxF 'amneziawg' "$modules_file" 2>/dev/null; then
              echo "amneziawg" > "$modules_file" || log_warn "Не удалось записать модуль в $modules_file"
              log "Добавлено в $modules_file для автозагрузки."
         fi
     fi
     log "Проверка информации о модуле..."
-    modinfo amneziawg | grep -E "version|vermagic" | log_msg "INFO" # Логируем вывод
+    modinfo amneziawg | grep -E "version|vermagic" | log_msg "INFO"
     # Проверка совместимости vermagic
     local current_vermagic
-    current_vermagic=$(modinfo amneziawg | grep vermagic | awk '{print $2}')
-    if [[ "$current_vermagic" != "$(uname -r)" ]]; then
-        log_warn "Версия ядра в vermagic модуля ($current_vermagic) НЕ совпадает с текущим ядром ($(uname -r)). Это МОЖЕТ вызвать проблемы."
+    current_vermagic=$(modinfo amneziawg | grep vermagic | awk '{print $2}') || current_vermagic="<не найден>"
+    local kernel_release
+    kernel_release=$(uname -r)
+    if [[ "$current_vermagic" != "$kernel_release" ]]; then
+        log_warn "Версия ядра в vermagic модуля ($current_vermagic) НЕ совпадает с текущим ядром ($kernel_release). Это МОЖЕТ вызвать проблемы."
     else
         log "Версия ядра vermagic модуля совпадает с текущим ядром."
     fi
@@ -312,7 +361,8 @@ step4_setup_firewall() {
     apt install -y ufw || die "Не удалось установить UFW."
 
     log "Настройка правил UFW..."
-    ufw reset # Сброс до дефолтных правил (на случай предыдущих настроек)
+    # Сбрасываем на всякий случай, чтобы избежать конфликтов со старыми правилами
+    ufw reset <<< "y" || log_warn "Не удалось сбросить UFW (возможно, он не был активен)."
     ufw default deny incoming      || log_warn "Не удалось установить default deny incoming."
     ufw default allow outgoing     || log_warn "Не удалось установить default allow outgoing."
     ufw allow OpenSSH              || log_warn "Не удалось добавить правило для OpenSSH."
@@ -322,23 +372,25 @@ step4_setup_firewall() {
     log "Включение UFW..."
     if ! ufw status | grep -q 'Status: active'; then
         # Проверка наличия правила SSH перед включением
-        if ! ufw status | grep -q '22/tcp.*ALLOW'; then # Проверяем стандартный порт, если вы используете другой, эту проверку нужно изменить
-            log_error "Правило для SSH (порт 22/tcp) не найдено в UFW! Включение фаервола ЗАБЛОКИРУЕТ ВАШ ДОСТУП!"
-            read -p "Вы уверены, что SSH на другом порту и правило добавлено? Или хотите продолжить на свой страх и риск? [y/N]: " confirm_ssh
-            if ! [[ "$confirm_ssh" =~ ^[Yy]$ ]]; then
-                 die "Включение UFW отменено для предотвращения блокировки доступа."
-            fi
-            log_warn "Продолжение включения UFW без стандартного правила SSH!"
+        if ! ufw status verbose | grep -q '22/tcp.*ALLOW IN'; then # Проверяем стандартный порт
+             log_error "Правило для стандартного SSH (порт 22/tcp) не найдено в UFW!"
+             log_warn "Если ваш SSH на ДРУГОМ порту, вам НУЖНО было добавить его вручную ДО этого шага!"
+             log_warn "Пример: sudo ufw allow ВАШ_ПОРТ/tcp"
+             read -p "Вы уверены, что доступ по SSH обеспечен и хотите включить фаервол? [y/N]: " confirm_ssh < /dev/tty
+             if ! [[ "$confirm_ssh" =~ ^[Yy]$ ]]; then
+                  die "Включение UFW отменено для предотвращения блокировки доступа."
+             fi
+             log_warn "Продолжение включения UFW без явного правила для порта 22!"
         fi
         ufw --force enable || die "Не удалось включить UFW."
         log "UFW включен и активирован при загрузке."
     else
-        log "UFW уже активен."
+        log "UFW уже активен. Перезагрузка правил..."
         ufw reload || log_warn "Не удалось перезагрузить правила UFW."
     fi
 
     log "Текущий статус UFW:"
-    ufw status verbose | log_msg "INFO" # Логируем вывод
+    ufw status verbose | log_msg "INFO"
     log "Шаг 4 успешно завершен."
     update_state 5
 }
@@ -361,6 +413,8 @@ step5_setup_python() {
     fi
 
     log "Обновление pip и установка qrcode[pil] в venv..."
+    # Убедимся, что Python из venv существует и исполняемый
+    if [ ! -x "$PYTHON_VENV" ]; then die "Не найден исполняемый файл Python в venv: $PYTHON_VENV"; fi
     "$PYTHON_VENV" -m pip install -U pip || die "Не удалось обновить pip в venv."
     "$PYTHON_VENV" -m pip install qrcode[pil] || die "Не удалось установить qrcode[pil] в venv."
     log "Зависимости Python установлены."
@@ -370,8 +424,12 @@ step5_setup_python() {
         wget --no-verbose -O "$AWGCFG_SCRIPT" https://gist.githubusercontent.com/remittor/8c3d9ff293b2ba4b13c367cc1a69f9eb/raw/awgcfg.py || die "Не удалось скачать $AWGCFG_SCRIPT."
         chmod +x "$AWGCFG_SCRIPT" || die "Не удалось сделать $AWGCFG_SCRIPT исполняемым."
         log "Скрипт $AWGCFG_SCRIPT скачан и сделан исполняемым."
+    elif [ ! -x "$AWGCFG_SCRIPT" ]; then
+         # Если файл есть, но не исполняемый
+         chmod +x "$AWGCFG_SCRIPT" || die "Не удалось сделать $AWGCFG_SCRIPT исполняемым."
+         log "Скрипт $AWGCFG_SCRIPT сделан исполняемым."
     else
-        log "Скрипт $AWGCFG_SCRIPT уже существует."
+        log "Скрипт $AWGCFG_SCRIPT уже существует и является исполняемым."
     fi
     log "Шаг 5 успешно завершен."
     update_state 6
@@ -397,21 +455,24 @@ step6_generate_configs() {
          log "Шаблон $CLIENT_TEMPLATE_FILE создан."
     else
          log "Используется существующий шаблон $CLIENT_TEMPLATE_FILE."
-         # Сохраняем резервную копию шаблона перед изменением
-         cp "$CLIENT_TEMPLATE_FILE" "${CLIENT_TEMPLATE_FILE}.bak-$(date +%F_%T)" || log_warn "Не удалось создать резервную копию шаблона."
+         local template_backup="${CLIENT_TEMPLATE_FILE}.bak-$(date +%F_%T)"
+         cp "$CLIENT_TEMPLATE_FILE" "$template_backup" || log_warn "Не удалось создать резервную копию шаблона $template_backup."
     fi
 
     # Применяем желаемые изменения к шаблону:
     log "Применение кастомных настроек к шаблону:"
+    local sed_failed=0
     # 1. DNS = 1.1.1.1
-    sed -i 's/^DNS = .*/DNS = 1.1.1.1/' "$CLIENT_TEMPLATE_FILE" && log " - DNS установлен в 1.1.1.1" || log_warn "Не удалось установить DNS в шаблоне."
+    sed -i 's/^DNS = .*/DNS = 1.1.1.1/' "$CLIENT_TEMPLATE_FILE" && log " - DNS установлен в 1.1.1.1" || { log_warn "Не удалось установить DNS в шаблоне."; sed_failed=1; }
     # 2. PersistentKeepalive = 33
-    sed -i 's/^PersistentKeepalive = .*/PersistentKeepalive = 33/' "$CLIENT_TEMPLATE_FILE" && log " - PersistentKeepalive установлен в 33" || log_warn "Не удалось установить PersistentKeepalive в шаблоне."
+    sed -i 's/^PersistentKeepalive = .*/PersistentKeepalive = 33/' "$CLIENT_TEMPLATE_FILE" && log " - PersistentKeepalive установлен в 33" || { log_warn "Не удалось установить PersistentKeepalive в шаблоне."; sed_failed=1; }
     # 3. AllowedIPs = Список Amnezia + DNS Google/Cloudflare
     local amnezia_allowed_ips="0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
-    # Используем другой разделитель для sed из-за слешей в IP-адресах
-    sed -i "s|^AllowedIPs = .*|AllowedIPs = ${amnezia_allowed_ips}|" "$CLIENT_TEMPLATE_FILE" && log " - AllowedIPs установлен в список Amnezia + DNS" || log_warn "Не удалось установить AllowedIPs в шаблоне."
-    log "Шаблон $CLIENT_TEMPLATE_FILE успешно кастомизирован."
+    # Используем другой разделитель для sed (#) из-за слешей в IP-адресах
+    sed -i "s#^AllowedIPs = .*#AllowedIPs = ${amnezia_allowed_ips}#" "$CLIENT_TEMPLATE_FILE" && log " - AllowedIPs установлен в список Amnezia + DNS" || { log_warn "Не удалось установить AllowedIPs в шаблоне."; sed_failed=1; }
+
+    if [ "$sed_failed" -eq 1 ]; then log_warn "Не все настройки шаблона были применены успешно."; fi
+    log "Шаблон $CLIENT_TEMPLATE_FILE кастомизирован."
     # --- Конец кастомизации шаблона ---
 
     log "Генерация основного конфигурационного файла сервера $server_conf_file..."
@@ -429,7 +490,6 @@ step6_generate_configs() {
 
     # Добавление тестовых/начальных клиентов
     log "Добавление/проверка клиентов по умолчанию (my_phone, my_laptop)..."
-    # Используем grep для проверки наличия секции пира (комментарий обязателен!)
     if ! grep -q "\[Peer\] # my_phone" "$server_conf_file"; then
       "$PYTHON_VENV" "$AWGCFG_SCRIPT" -a "my_phone" || log_warn "Не удалось добавить клиента my_phone."
     else log "Клиент my_phone уже существует в $server_conf_file."; fi
@@ -443,7 +503,7 @@ step6_generate_configs() {
     "$PYTHON_VENV" "$AWGCFG_SCRIPT" -c -q || die "Ошибка генерации клиентских конфигурационных файлов."
 
     log "Клиентские файлы созданы/обновлены в директории $AWG_DIR:"
-    ls -l "$AWG_DIR"/*.conf "$AWG_DIR"/*.png | log_msg "INFO" # Логируем вывод ls
+    ls -l "$AWG_DIR"/*.conf "$AWG_DIR"/*.png | log_msg "INFO"
     log "Шаг 6 успешно завершен."
     update_state 7
 }
@@ -458,27 +518,26 @@ step7_start_service() {
 
     log "Проверка статуса сервиса systemd (ожидание 3 сек)..."
     sleep 3
-    systemctl status awg-quick@awg0 --no-pager -l | log_msg "INFO" # Логируем вывод
+    systemctl status awg-quick@awg0 --no-pager -l | log_msg "INFO"
 
     if systemctl is-failed --quiet awg-quick@awg0; then
         die "Сервис awg-quick@awg0 находится в состоянии failed. Проверьте 'journalctl -u awg-quick@awg0'."
-    elif ! systemctl is-active --quiet awg-quick@awg0; then
-        # Для wg-quick@.service статус 'inactive (dead)' после 'exited' тоже может быть нормой, если интерфейс остался поднят.
-        # Главное - не 'failed'. Проверим сам интерфейс.
-        log_warn "Статус systemd сервиса awg-quick@awg0 не 'active'. Проверяем интерфейс awg0..."
     fi
+    # Статус exited - норма для wg-quick
 
     log "Проверка статуса интерфейса AmneziaWG (awg show)..."
     sleep 2
     local awg_show_output
-    awg_show_output=$(awg show 2>&1) # Захватываем и stderr
-    if ! echo "$awg_show_output" | grep -q "interface: awg0"; then
-       log_error "Команда 'awg show' не показывает активный интерфейс awg0. Вывод команды:"
+    # Выполняем в subshell чтобы не загрязнять переменные основного скрипта, если awg выдаст ошибку
+    awg_show_output=$(awg show 2>&1)
+    local awg_show_status=$?
+    if [ $awg_show_status -ne 0 ] || ! echo "$awg_show_output" | grep -q "interface: awg0"; then
+       log_error "Команда 'awg show' не показывает активный интерфейс awg0 или завершилась с ошибкой ($awg_show_status). Вывод команды:"
        log_msg "ERROR" "$awg_show_output"
        die "Проблема с запуском интерфейса awg0."
     fi
     log "Интерфейс awg0 активен. Вывод 'awg show':"
-    echo "$awg_show_output" | log_msg "INFO" # Логируем вывод awg show
+    echo "$awg_show_output" | log_msg "INFO"
 
     log "Шаг 7 успешно завершен."
     update_state 99
@@ -486,7 +545,6 @@ step7_start_service() {
 
 # ШАГ 99: Завершение установки
 step99_finish() {
-    # Этот шаг вызывается, когда state=99
     log "### ЗАВЕРШЕНИЕ УСТАНОВКИ ###"
     log "=============================================================================="
     log "Установка и настройка AmneziaWG УСПЕШНО ЗАВЕРШЕНА!"
@@ -509,11 +567,14 @@ step99_finish() {
     log "  ufw status verbose               - Показать статус и правила фаервола"
     log " "
     log "УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ:"
-    log "  Используйте скрипт 'manage_amneziawg.sh', который должен быть скачан в $AWG_DIR."
+    log "  Скачайте и используйте скрипт 'manage_amneziawg.sh':"
+    log "  wget -O $AWG_DIR/manage_amneziawg.sh https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/manage_amneziawg.sh"
+    log "  chmod +x $AWG_DIR/manage_amneziawg.sh"
     log "  Пример: sudo bash $AWG_DIR/manage_amneziawg.sh add new_client_name"
+    log "  (Не забудьте перезапустить сервис после добавления/удаления: sudo systemctl restart awg-quick@awg0)"
     log " "
     log "Удаление файла состояния установки..."
-    if ! rm -f "$STATE_FILE"; then log_warn "Не удалось удалить файл состояния $STATE_FILE"; fi
+    rm -f "$STATE_FILE" || log_warn "Не удалось удалить файл состояния $STATE_FILE"
     log "Установка полностью завершена. Лог файл: $LOG_FILE"
     log "=============================================================================="
 }
@@ -523,19 +584,19 @@ step99_finish() {
 initialize_setup
 
 # Цикл выполняется до тех пор, пока не будет достигнут шаг завершения (99)
+# Переменная current_step обновляется либо при чтении state_file, либо после успешного выполнения шага
 while (( current_step < 99 )); do
     log "Выполнение шага $current_step..."
     case $current_step in
-        1) step1_update_system_and_networking ;;
-        2) step2_install_amnezia ;;
-        3) step3_check_module; current_step=4 ;; # Переход к следующему шагу без break/continue
+        1) step1_update_system_and_networking ;; # Завершится с exit или request_reboot
+        2) step2_install_amnezia ;;             # Завершится с exit или request_reboot
+        3) step3_check_module; current_step=4 ;; # Обновляем current_step для следующей итерации
         4) step4_setup_firewall; current_step=5 ;;
         5) step5_setup_python; current_step=6 ;;
         6) step6_generate_configs; current_step=7 ;;
-        7) step7_start_service; current_step=99 ;; # Установка завершена
+        7) step7_start_service; current_step=99 ;; # Установка завершена, выходим из цикла
         *) die "Ошибка: Неизвестный или недостижимый шаг состояния $current_step в файле $STATE_FILE." ;;
     esac
-    # Если шаг требовал перезагрузки, скрипт завершится внутри request_reboot
 done
 
 # Вызов финального шага, если цикл завершился (current_step == 99)
