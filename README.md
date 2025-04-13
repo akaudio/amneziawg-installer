@@ -4,9 +4,12 @@
 
 # Руководство по установке и управлению AmneziaWG с помощью скриптов
 
+![Быстрый старт](https://img.shields.io/badge/Быстрый_старт-Инструкция-brightgreen)
+![Quick Start](https://img.shields.io/badge/Quick_Start-Guide-informational)
+![Install](https://img.shields.io/badge/🚀_Быстрый_старт-Установка-success)
+
 ## Быстрый старт
 
-```bash
 wget -O - https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh | sudo bash
 
 ## Введение
