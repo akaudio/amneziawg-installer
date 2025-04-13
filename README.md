@@ -1,3 +1,7 @@
+![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-orange)
+![License](https://img.shields.io/badge/License-MIT-blue)
+![Status](https://img.shields.io/badge/Status-Active-success)
+
 # Руководство по установке и управлению AmneziaWG с помощью скриптов
 
 ## Введение
