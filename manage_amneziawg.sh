@@ -2,10 +2,10 @@
 
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG
-# Автор: Claude (адаптировано на основе обсуждения с пользователем @bivlked)
-# Версия: 1.1
+# Автор: @bivlked)
+# Версия: 1.2
 # Дата: 2025-04-14
-# Репозиторий: https://github.com/bivlked/amneziawg-installer (Пример)
+# Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
@@ -13,9 +13,8 @@
 set -o pipefail
 
 # Директория, где лежат файлы установки и клиентские конфиги
-# Используем $HOME как базу, чтобы работало и для root, и для sudo пользователя
-# Предполагаем, что install_amneziawg.sh создал $HOME/awg
-AWG_DIR="$HOME/awg"
+# Определяем дом. директорию root, т.к. скрипт должен запускаться от root
+AWG_DIR="/root/awg"
 # Конфигурационный файл установки (для проверки существования)
 SETUP_CONFIG_FILE="$AWG_DIR/setup.conf"
 # Путь к виртуальному окружению Python
@@ -34,27 +33,45 @@ log_msg() {
     local message="$2"
     local timestamp
     timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    local log_entry="[$timestamp] $type: $message"
-    echo "$log_entry" | tee -a "$LOG_FILE"
-    if [[ "$type" == "ERROR" ]]; then echo "$log_entry" >&2; fi
+    # Экранируем '%' для printf
+    local safe_message
+    safe_message=$(echo "$message" | sed 's/%/%%/g')
+    local log_entry="[$timestamp] $type: $safe_message"
+
+    # Запись в лог-файл (создаем директорию, если нужно)
+    mkdir -p "$(dirname "$LOG_FILE")"
+    printf "%s\n" "$log_entry" >> "$LOG_FILE"
+
+    # Вывод на экран (stderr для ошибок/предупреждений)
+    if [[ "$type" == "ERROR" ]]; then
+        printf "%s\n" "$log_entry" >&2
+    else
+        # Выводим всё, кроме INFO, если не терминал (чтобы не засорять вывод при автоматизации)
+        if [[ "$type" != "INFO" || -t 1 ]]; then
+            printf "%s\n" "$log_entry"
+        fi
+    fi
 }
 log() { log_msg "INFO" "$1"; }
+log_warn() { log_msg "WARN" "$1"; }
 log_error() { log_msg "ERROR" "$1"; }
 die() { log_error "$1"; exit 1; }
 
 
 # --- Функция вывода помощи ---
 usage() {
-  echo "Использование: $0 <команда> [аргументы]" | tee -a "$LOG_FILE"
-  echo "Команды:" | tee -a "$LOG_FILE"
-  echo "  add <имя_клиента>       - Добавить нового клиента (пира)." | tee -a "$LOG_FILE"
-  echo "                            Имя: латинские буквы, цифры, дефис, подчеркивание." | tee -a "$LOG_FILE"
-  echo "  remove <имя_клиента>    - Удалить существующего клиента." | tee -a "$LOG_FILE"
-  echo "  list                    - Показать список текущих клиентов (пиров) из конфигурации." | tee -a "$LOG_FILE"
-  echo "  regen [имя_клиента]   - Перегенерировать файл .conf и QR-код для клиента(ов)." | tee -a "$LOG_FILE"
-  echo "                            Без имени - для ВСЕХ. ВНИМАНИЕ: Перезаписывает файлы!" | tee -a "$LOG_FILE"
-  echo "  show                    - Показать текущий статус AmneziaWG (аналог 'awg show')." | tee -a "$LOG_FILE"
-  echo "  help                    - Показать это сообщение." | tee -a "$LOG_FILE"
+  # Выводим на stderr, так как это информация об ошибке использования
+  exec >&2
+  echo "Использование: $0 <команда> [аргументы]"
+  echo "Команды:"
+  echo "  add <имя_клиента>       - Добавить нового клиента (пира)."
+  echo "                            Имя: латинские буквы, цифры, дефис, подчеркивание."
+  echo "  remove <имя_клиента>    - Удалить существующего клиента."
+  echo "  list                    - Показать список текущих клиентов (пиров) из конфигурации."
+  echo "  regen [имя_клиента]   - Перегенерировать файл .conf и QR-код для клиента(ов)."
+  echo "                            Без имени - для ВСЕХ. ВНИМАНИЕ: Перезаписывает файлы!"
+  echo "  show                    - Показать текущий статус AmneziaWG (аналог 'awg show')."
+  echo "  help                    - Показать это сообщение."
   exit 1
 }
 
@@ -106,6 +123,7 @@ case $COMMAND in
         die "Имя клиента '$CLIENT_NAME' содержит недопустимые символы. Разрешены: a-z, A-Z, 0-9, _, -."
     fi
     # Проверка, не существует ли уже такой клиент в конфиге сервера
+    # Добавляем $ для точного совпадения имени в комментарии
     if grep -q "\[Peer\] # ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then
         die "Клиент с именем '$CLIENT_NAME' уже существует в $SERVER_CONF_FILE."
     fi
@@ -122,8 +140,7 @@ case $COMMAND in
              log_error "Ошибка при генерации файлов для клиента '$CLIENT_NAME'."
         fi
     else
-        # awgcfg.py может выдать ошибку, если клиент уже есть, хотя мы проверили выше
-        log_error "Ошибка при добавлении клиента '$CLIENT_NAME'. Возможно, он уже существует или произошла другая ошибка awgcfg.py."
+        log_error "Ошибка при добавлении клиента '$CLIENT_NAME'. Проверьте вывод команды выше."
     fi
     ;;
 
@@ -142,7 +159,7 @@ case $COMMAND in
         log "Файлы удалены (если существовали)."
         log "ВАЖНО: Перезапустите сервис AmneziaWG для применения изменений: sudo systemctl restart awg-quick@awg0"
     else
-        log_error "Ошибка при удалении клиента '$CLIENT_NAME'. Проверьте вывод awgcfg.py."
+        log_error "Ошибка при удалении клиента '$CLIENT_NAME'. Проверьте вывод команды выше."
     fi
     ;;
 
