@@ -10,7 +10,9 @@
 
 ## Быстрый старт
 
+```bash
 wget -O - https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh | sudo bash
+```
 
 ## Введение
 
