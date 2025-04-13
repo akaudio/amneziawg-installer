@@ -447,11 +447,27 @@ step6_generate_configs() {
     mkdir -p "$server_conf_dir" || die "Не удалось создать директорию $server_conf_dir"
     log "Создана/проверена директория $server_conf_dir."
 
-    # --- Кастомизация шаблона клиента ---
+    # === ИЗМЕНЕНИЕ ПОРЯДКА ===
+    # СНАЧАЛА генерируем конфигурацию сервера (--make)
+    log "Генерация основного конфигурационного файла сервера $server_conf_file..."
+    "$PYTHON_VENV" "$AWGCFG_SCRIPT" --make "$server_conf_file" -i "${AWG_TUNNEL_SUBNET}" -p "${AWG_PORT}" || die "Ошибка генерации конфигурации сервера $server_conf_file."
+    log "Конфигурация сервера успешно сгенерирована."
+
+    # Резервная копия и права доступа к конфигу сервера
+    local server_conf_bak="${server_conf_file}.bak-$(date +%F_%T)"
+    cp "$server_conf_file" "$server_conf_bak" || log_warn "Не удалось создать резервную копию $server_conf_bak"
+    log "Создана резервная копия $server_conf_bak"
+    chmod 700 /etc/amnezia || log_warn "Не удалось установить права на /etc/amnezia"
+    chmod 700 "$server_conf_dir" || log_warn "Не удалось установить права на $server_conf_dir"
+    chmod 600 "$server_conf_file" || log_warn "Не удалось установить права на $server_conf_file"
+    log "Установлены безопасные права доступа к конфигурации."
+
+    # ТЕПЕРЬ создаем и кастомизируем шаблон клиента (--create и sed)
     log "Проверка/создание и кастомизация шаблона $CLIENT_TEMPLATE_FILE..."
     if [ ! -f "$CLIENT_TEMPLATE_FILE" ]; then
          log "Шаблон $CLIENT_TEMPLATE_FILE не найден, создаем..."
-         "$PYTHON_VENV" "$AWGCFG_SCRIPT" --create || die "Не удалось создать шаблон $CLIENT_TEMPLATE_FILE. Проверьте доступность внешнего IP."
+         # Вызов awgcfg.py для создания шаблона
+         "$PYTHON_VENV" "$AWGCFG_SCRIPT" --create || die "Не удалось создать шаблон $CLIENT_TEMPLATE_FILE. Проверьте доступность внешнего IP или лог awgcfg.py."
          log "Шаблон $CLIENT_TEMPLATE_FILE создан."
     else
          log "Используется существующий шаблон $CLIENT_TEMPLATE_FILE."
@@ -468,25 +484,11 @@ step6_generate_configs() {
     sed -i 's/^PersistentKeepalive = .*/PersistentKeepalive = 33/' "$CLIENT_TEMPLATE_FILE" && log " - PersistentKeepalive установлен в 33" || { log_warn "Не удалось установить PersistentKeepalive в шаблоне."; sed_failed=1; }
     # 3. AllowedIPs = Список Amnezia + DNS Google/Cloudflare
     local amnezia_allowed_ips="0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"
-    # Используем другой разделитель для sed (#) из-за слешей в IP-адресах
     sed -i "s#^AllowedIPs = .*#AllowedIPs = ${amnezia_allowed_ips}#" "$CLIENT_TEMPLATE_FILE" && log " - AllowedIPs установлен в список Amnezia + DNS" || { log_warn "Не удалось установить AllowedIPs в шаблоне."; sed_failed=1; }
 
     if [ "$sed_failed" -eq 1 ]; then log_warn "Не все настройки шаблона были применены успешно."; fi
     log "Шаблон $CLIENT_TEMPLATE_FILE кастомизирован."
-    # --- Конец кастомизации шаблона ---
-
-    log "Генерация основного конфигурационного файла сервера $server_conf_file..."
-    "$PYTHON_VENV" "$AWGCFG_SCRIPT" --make "$server_conf_file" -i "${AWG_TUNNEL_SUBNET}" -p "${AWG_PORT}" || die "Ошибка генерации конфигурации сервера $server_conf_file."
-    log "Конфигурация сервера успешно сгенерирована."
-
-    # Резервная копия и права доступа
-    local server_conf_bak="${server_conf_file}.bak-$(date +%F_%T)"
-    cp "$server_conf_file" "$server_conf_bak" || log_warn "Не удалось создать резервную копию $server_conf_bak"
-    log "Создана резервная копия $server_conf_bak"
-    chmod 700 /etc/amnezia || log_warn "Не удалось установить права на /etc/amnezia"
-    chmod 700 "$server_conf_dir" || log_warn "Не удалось установить права на $server_conf_dir"
-    chmod 600 "$server_conf_file" || log_warn "Не удалось установить права на $server_conf_file"
-    log "Установлены безопасные права доступа к конфигурации."
+    # === Конец изменений ===
 
     # Добавление тестовых/начальных клиентов
     log "Добавление/проверка клиентов по умолчанию (my_phone, my_laptop)..."
