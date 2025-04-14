@@ -117,66 +117,78 @@ request_reboot() {
 # --- Шаг 0: Инициализация и Настройка Переменных ---
 initialize_setup() {
     # Перенаправляем весь вывод функций в лог (и на экран через log_msg)
-    # Делаем это здесь, чтобы лог создавался в правильном месте
     mkdir -p "$AWG_DIR" || die "Не удалось создать рабочую директорию $AWG_DIR"
-    # Устанавливаем права, чтобы root мог писать в лог, даже если директорию создал обычный пользователь через sudo
     chown root:root "$AWG_DIR" || log_warn "Не удалось сменить владельца $AWG_DIR на root:root"
     exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
 
     log "--- НАЧАЛО УСТАНОВКИ / ПРОВЕРКА СОСТОЯНИЯ ---"
     log "### ШАГ 0: Инициализация и проверка прав ###"
 
-    # Проверка прав root
     if [ "$(id -u)" -ne 0 ]; then die "Скрипт должен быть запущен с правами root (через sudo)."; fi
 
-    # Переходим в рабочую директорию (уже создана)
     cd "$AWG_DIR" || die "Не удалось перейти в рабочую директорию $AWG_DIR"
     log "Рабочая директория: $AWG_DIR"
     log "Лог файл: $LOG_FILE"
 
-    # Определение путей к Python и скрипту
     PYTHON_VENV="$AWG_DIR/venv/bin/python"
     AWGCFG_SCRIPT="$AWG_DIR/awgcfg.py"
 
-    # Значения по умолчанию для настроек
     local default_port=39743
     local default_subnet="10.9.9.1/24"
+    local port_from_file=""
+    local subnet_from_file=""
+    local config_exists=0
 
-    # Загружаем конфиг, если он есть, иначе создаем с дефолтами/запросом
+    # Пытаемся загрузить конфиг, если он есть
     if [[ -f "$CONFIG_FILE" ]]; then
-        log "Загрузка настроек из $CONFIG_FILE..."
-        source "$CONFIG_FILE" || log_warn "Не удалось полностью загрузить настройки из $CONFIG_FILE."
-        AWG_PORT=${AWG_PORT:-$default_port}
-        AWG_TUNNEL_SUBNET=${AWG_TUNNEL_SUBNET:-$default_subnet}
-        log "Настройки загружены."
+        log "Найден файл конфигурации $CONFIG_FILE. Загрузка настроек..."
+        config_exists=1
+        # Источник файла в subshell, чтобы не загрязнять окружение
+        # и захватываем значения переменных
+        port_from_file=$(source "$CONFIG_FILE" && echo "$AWG_PORT")
+        subnet_from_file=$(source "$CONFIG_FILE" && echo "$AWG_TUNNEL_SUBNET")
+        AWG_PORT=${port_from_file:-$default_port}
+        AWG_TUNNEL_SUBNET=${subnet_from_file:-$default_subnet}
+        log "Настройки из файла загружены (или использованы значения по умолчанию при ошибке)."
     else
-        log "Файл конфигурации $CONFIG_FILE не найден. Запрос настроек у пользователя."
-        # Запрос порта у пользователя (читаем с терминала!)
-        read -p "Введите UDP порт для AmneziaWG (рекомендуется 1024-65535) [${default_port}]: " input_port < /dev/tty
-        AWG_PORT=${input_port:-$default_port}
+        log "Файл конфигурации $CONFIG_FILE не найден."
+        # Используем значения по умолчанию перед запросом
+        AWG_PORT=$default_port
+        AWG_TUNNEL_SUBNET=$default_subnet
+    fi
+
+    # Если конфиг не существовал, запрашиваем у пользователя
+    if [[ "$config_exists" -eq 0 ]]; then
+        log "Запрос настроек у пользователя."
+        read -p "Введите UDP порт для AmneziaWG (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty
+        # Используем введенное значение, если оно не пустое
+        if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi
+
+        # Валидация порта
         if ! [[ "$AWG_PORT" =~ ^[0-9]+$ ]] || [ "$AWG_PORT" -lt 1024 ] || [ "$AWG_PORT" -gt 65535 ]; then
-            die "Некорректный номер порта: $AWG_PORT. Введите число от 1024 до 65535."
+            die "Некорректный номер порта: $AWG_PORT."
         fi
 
-        # Запрос подсети у пользователя (читаем с терминала!)
-        read -p "Введите подсеть туннеля (например, 10.x.x.1/24) [${default_subnet}]: " input_subnet < /dev/tty
-        AWG_TUNNEL_SUBNET=${input_subnet:-$default_subnet}
+        read -p "Введите подсеть туннеля (например, 10.x.x.1/24) [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty
+        if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi
+
+         # Валидация подсети
         if ! [[ "$AWG_TUNNEL_SUBNET" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
             printf "%s\n" "ERROR: Некорректный формат подсети: '$AWG_TUNNEL_SUBNET'. Пример: 10.9.9.1/24." >&2
             exit 1
         fi
-
-        # Сохраняем введенные/дефолтные настройки в файл
-        log "Сохранение настроек в $CONFIG_FILE..."
-        # Используем printf для большей надежности при записи
-        printf "%s\n" "# Конфигурация установки AmneziaWG" > "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
-        printf "%s\n" "# Этот файл генерируется автоматически." >> "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
-        printf "export AWG_PORT=%s\n" "${AWG_PORT}" >> "$CONFIG_FILE" || die "Не удалось записать порт в $CONFIG_FILE"
-        printf "export AWG_TUNNEL_SUBNET='%s'\n" "${AWG_TUNNEL_SUBNET}" >> "$CONFIG_FILE" || die "Не удалось записать подсеть в $CONFIG_FILE" # Добавлены кавычки
-        log "Настройки сохранены."
     fi
 
-    # Экспортируем переменные, чтобы они были доступны в функциях текущего запуска
+    # === ГАРАНТИРОВАННОЕ СОХРАНЕНИЕ/ОБНОВЛЕНИЕ setup.conf ===
+    log "Сохранение/Обновление настроек в $CONFIG_FILE..."
+    printf "%s\n" "# Конфигурация установки AmneziaWG" > "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
+    printf "%s\n" "# Этот файл используется скриптом управления." >> "$CONFIG_FILE" || die "Не удалось записать в $CONFIG_FILE"
+    printf "export AWG_PORT=%s\n" "${AWG_PORT}" >> "$CONFIG_FILE" || die "Не удалось записать порт в $CONFIG_FILE"
+    printf "export AWG_TUNNEL_SUBNET='%s'\n" "${AWG_TUNNEL_SUBNET}" >> "$CONFIG_FILE" || die "Не удалось записать подсеть в $CONFIG_FILE"
+    log "Настройки сохранены в $CONFIG_FILE."
+    # ======================================================
+
+    # Экспортируем переменные для текущего запуска
     export AWG_PORT
     export AWG_TUNNEL_SUBNET
 
@@ -187,7 +199,7 @@ initialize_setup() {
     if [[ -f "$STATE_FILE" ]]; then
         current_step=$(cat "$STATE_FILE")
         if ! [[ "$current_step" =~ ^[0-9]+$ ]]; then
-            log_warn "Файл состояния $STATE_FILE поврежден или содержит нечисловое значение. Начинаем установку с начала."
+            log_warn "Файл состояния $STATE_FILE поврежден. Начинаем установку с начала."
             current_step=1
             update_state 1
         else
