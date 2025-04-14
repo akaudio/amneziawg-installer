@@ -209,11 +209,20 @@ step1_update_system_and_networking() {
     log "### ШАГ 1: Обновление системы и настройка ядра ###"
     log "Обновление списка пакетов..."
     apt update -y || die "Ошибка при apt update."
+
+    # --- ДОБАВЛЕНО: Разблокировка dpkg ---
+    log "Проверка и разблокировка dpkg (если требуется)..."
+    # Неинтерактивный запуск dpkg --configure -a
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a || log_warn "Команда 'dpkg --configure -a' завершилась с ошибкой (возможно, не требовалась)."
+    # -----------------------------------
+
     log "Обновление системы (может занять время)..."
-    # DEBIAN_FRONTEND=noninteractive предотвращает большинство диалогов apt
+    # Используем DEBIAN_FRONTEND=noninteractive для минимизации запросов при обновлении
     DEBIAN_FRONTEND=noninteractive apt full-upgrade -y || die "Ошибка при apt full-upgrade."
     log "Система обновлена."
+
     # Установка базовых утилит, если их вдруг нет
+    log "Установка базовых утилит (curl, wget, gpg, sudo, net-tools)..."
     DEBIAN_FRONTEND=noninteractive apt install -y curl wget gpg sudo net-tools || log_warn "Не удалось установить базовые утилиты."
 
     log "Отключение IPv6..."
