@@ -387,30 +387,30 @@ step4_setup_firewall() {
     DEBIAN_FRONTEND=noninteractive apt install -y ufw || die "Не удалось установить UFW."
 
     log "Настройка правил UFW..."
-    # Сбрасываем правила
-    if ! ufw --force reset; then log_warn "Не удалось сбросить UFW."; fi # Используем --force для неинтерактивного сброса
+    # === ИЗМЕНЕНИЕ: Убираем ufw reset ===
+    # if ! ufw --force reset; then log_warn "Не удалось сбросить UFW."; fi
     ufw default deny incoming      || log_warn "Не удалось установить default deny incoming."
     ufw default allow outgoing     || log_warn "Не удалось установить default allow outgoing."
 
-    # --- ИЗМЕНЕНИЕ: Добавляем правило ЯВНО по порту 22/tcp ---
+    # Добавляем правило ЯВНО по порту 22/tcp
     log "Добавление правила для стандартного порта SSH (22/tcp)..."
     ufw allow 22/tcp comment "SSH Access" || log_warn "Не удалось добавить правило для порта 22/tcp."
-    # --------------------------------------------------------
 
     # Добавляем правило для порта AmneziaWG
     ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || log_warn "Не удалось добавить правило для порта AmneziaWG."
     log "Правила UFW настроены (запрет по умолч., разрешены 22/tcp и ${AWG_PORT}/udp)."
 
-    # Убираем отладочный вывод, т.к. он вызывал BrokenPipe
-    # log "Отладочный вывод 'ufw status verbose' ПЕРЕД проверкой:"
-    # ufw status verbose | log_msg "DEBUG"
+    # === ДОБАВЛЕНИЕ ПАУЗЫ ===
+    log "Небольшая пауза для применения правил..."
+    sleep 1
+    # -------------------------
 
     log "Включение UFW..."
     if ! ufw status | grep -q 'Status: active'; then
-        # --- ИЗМЕНЕННАЯ ПРОВЕРКА SSH (по порту 22) ---
-        # Проверяем, разрешен ли порт 22/tcp
-        if ! ufw status verbose | grep -q '22/tcp.*ALLOW IN'; then
-             log_error "Правило для стандартного порта SSH (22/tcp) не найдено в UFW!"
+        # === ИЗМЕНЕННАЯ ПРОВЕРКА SSH (упрощенная) ===
+        # Проверяем, разрешен ли порт 22/tcp (используем простой статус)
+        if ! ufw status | grep -q '22/tcp.*ALLOW'; then
+             log_error "Правило для стандартного порта SSH (22/tcp) не найдено в статусе UFW!"
              log_warn "Это критично для сохранения доступа к серверу."
              log_warn "Если ваш SSH на ДРУГОМ порту, вам НУЖНО было добавить правило для него вручную ДО этого шага!"
              # Запрос подтверждения в интерактивном режиме
@@ -426,7 +426,7 @@ step4_setup_firewall() {
         else
              log "Проверка наличия правила для порта 22/tcp прошла успешно."
         fi
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ПРОВЕРКИ ---
+        # === КОНЕЦ ИЗМЕНЕНИЙ ПРОВЕРКИ ===
 
         # Включаем UFW
         ufw enable <<< "y" || die "Не удалось включить UFW."
