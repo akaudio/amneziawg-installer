@@ -381,27 +381,32 @@ step3_check_module() {
 
 # ШАГ 4: Настройка фаервола (UFW)
 step4_setup_firewall() {
-    update_state 4 # Помечаем, что мы выполняем этот шаг
+    update_state 4
     log "### ШАГ 4: Настройка фаервола UFW ###"
     log "Установка UFW (если не установлен)..."
     DEBIAN_FRONTEND=noninteractive apt install -y ufw || die "Не удалось установить UFW."
 
     log "Настройка правил UFW..."
-    # Сбрасываем на всякий случай, чтобы избежать конфликтов со старыми правилами
-    # Используем <<< "y" для автоматического подтверждения
-    if ! ufw reset <<< "y" &>/dev/null; then log_warn "Не удалось сбросить UFW (возможно, он не был активен)."; fi
+    # Сбрасываем правила
+    if ! ufw reset <<< "y" &>/dev/null; then log_warn "Не удалось сбросить UFW."; fi
     ufw default deny incoming      || log_warn "Не удалось установить default deny incoming."
     ufw default allow outgoing     || log_warn "Не удалось установить default allow outgoing."
+    # Добавляем правило для стандартного профиля OpenSSH
     ufw allow OpenSSH              || log_warn "Не удалось добавить правило для OpenSSH."
+    # Добавляем правило для порта AmneziaWG
     ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN" || log_warn "Не удалось добавить правило для порта AmneziaWG."
-    log "Правила UFW настроены (запрет по умолч., разрешены SSH и ${AWG_PORT}/udp)."
+    log "Правила UFW настроены (запрет по умолч., разрешены OpenSSH и ${AWG_PORT}/udp)."
+
+    # --- ДОБАВЛЕН ОТЛАДОЧНЫЙ ВЫВОД ---
+    log "Отладочный вывод 'ufw status verbose' ПЕРЕД проверкой:"
+    ufw status verbose | log_msg "DEBUG"
+    # --------------------------------
 
     log "Включение UFW..."
     if ! ufw status | grep -q 'Status: active'; then
-        # Проверка наличия правила SSH перед включением
         # Проверяем, разрешено ли приложение OpenSSH
         if ! ufw status verbose | grep -q 'OpenSSH.*ALLOW IN'; then
-             log_error "Правило для приложения 'OpenSSH' не найдено в UFW!"
+             log_error "Правило для приложения 'OpenSSH' не найдено в выводе 'ufw status verbose' (см. отладку выше)!"
              log_warn "Убедитесь, что ваш SSH-сервер использует стандартный порт 22 или что вы добавили правило для вашего порта вручную."
              # Запрос подтверждения в интерактивном режиме
              if [[ -t 0 && -t 1 ]]; then
@@ -413,8 +418,11 @@ step4_setup_firewall() {
              else
                  die "Включение UFW прервано, т.к. правило для 'OpenSSH' не найдено, а скрипт запущен неинтерактивно."
              fi
+        else
+            log "Проверка наличия правила OpenSSH прошла успешно."
         fi
-        # Включаем UFW (без --force, т.к. reset уже был сделан)
+
+        # Включаем UFW
         ufw enable <<< "y" || die "Не удалось включить UFW."
         log "UFW включен и активирован при загрузке."
     else
@@ -422,10 +430,10 @@ step4_setup_firewall() {
         ufw reload || log_warn "Не удалось перезагрузить правила UFW."
     fi
 
-    log "Текущий статус UFW:"
-    ufw status verbose | log_msg "INFO" # Логируем вывод ufw status
+    log "Текущий статус UFW ПОСЛЕ включения/перезагрузки:"
+    ufw status verbose | log_msg "INFO"
     log "Шаг 4 успешно завершен."
-    update_state 5 # Переходим к шагу 5
+    update_state 5
 }
 
 # ШАГ 5: Настройка Python окружения, утилит и скачивание скрипта управления
