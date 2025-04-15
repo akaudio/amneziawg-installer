@@ -3,278 +3,66 @@
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG
 # Автор: @bivlked)
-# Версия: 1.8
-# Дата: 2025-04-14
+# Версия: 1.9
+# Дата: 2025-04-15
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
 
 # --- Безопасный режим и Константы ---
-# set -e # Раскомментируйте для немедленного выхода при любой ошибке
-set -o pipefail # Выход, если команда в пайпе завершается с ошибкой
+# set -e
+set -o pipefail
 
-# Директория, где лежат файлы установки и клиентские конфиги
-# Используем /root/awg, т.к. скрипт должен запускаться от root
+# Определяем директорию AWG и файл конфигурации сервера
 AWG_DIR="/root/awg"
-# Конфигурационный файл установки (для проверки существования)
-SETUP_CONFIG_FILE="$AWG_DIR/setup.conf"
-# Путь к виртуальному окружению Python
-PYTHON_VENV_PATH="$AWG_DIR/venv/bin/python"
-# Путь к скрипту awgcfg.py
-AWGCFG_SCRIPT_PATH="$AWG_DIR/awgcfg.py"
-# Лог файл управления
-LOG_FILE="$AWG_DIR/manage_amneziawg.log"
-# Файл конфигурации сервера
 SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf"
+SETUP_CONFIG_FILE="$AWG_DIR/setup.conf"
+PYTHON_VENV_PATH="$AWG_DIR/venv/bin/python"
+AWGCFG_SCRIPT_PATH="$AWG_DIR/awgcfg.py"
+LOG_FILE="$AWG_DIR/manage_amneziawg.log"
 
-
-# --- Функции Логирования ---
-# Функция для вывода сообщений в лог и на экран
-log_msg() {
-    local type="$1" # INFO, WARN, ERROR
-    local message="$2"
-    local timestamp
-    timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    # Экранируем '%' для printf
-    local safe_message
-    safe_message=$(echo "$message" | sed 's/%/%%/g')
-    local log_entry="[$timestamp] $type: $safe_message"
-
-    # Запись в лог-файл (создаем директорию, если нужно)
-    # Проверяем возможность записи перед попыткой
-    if ! mkdir -p "$(dirname "$LOG_FILE")" || ! touch "$LOG_FILE"; then
-        echo "[$timestamp] ERROR: Не удается создать/записать лог-файл $LOG_FILE" >&2
-        # Продолжаем без записи в лог, но сообщаем об ошибке
-    else
-        printf "%s\n" "$log_entry" >> "$LOG_FILE"
-    fi
-
-    # Вывод на экран (stderr для ошибок/предупреждений)
-    if [[ "$type" == "ERROR" ]]; then
-        printf "%s\n" "$log_entry" >&2
-    else
-        # Выводим всё, кроме INFO, если не терминал (чтобы не засорять вывод при автоматизации)
-        # В скрипте управления выводим все сообщения всегда для наглядности
-        printf "%s\n" "$log_entry"
-    fi
-}
+# --- Функции ---
+log_msg() { local type="$1"; local msg="$2"; local ts; ts=$(date +'%F %T'); local safe_msg; safe_msg=$(echo "$msg" | sed 's/%/%%/g'); local entry="[$ts] $type: $safe_msg"; if ! mkdir -p "$(dirname "$LOG_FILE")" || ! touch "$LOG_FILE"; then echo "[$ts] ERROR: Ошибка лог-файла $LOG_FILE" >&2; else printf "%s\n" "$entry" >> "$LOG_FILE"; fi; if [[ "$type" == "ERROR" ]]; then printf "%s\n" "$entry" >&2; else printf "%s\n" "$entry"; fi; }
 log() { log_msg "INFO" "$1"; }
 log_warn() { log_msg "WARN" "$1"; }
 log_error() { log_msg "ERROR" "$1"; }
-# Функция для выхода при ошибке
 die() { log_error "$1"; exit 1; }
+is_interactive() { [[ -t 0 && -t 1 ]]; }
+confirm_action() { if ! is_interactive; then return 0; fi; local action="$1"; local subject="$2"; read -p "Вы действительно хотите $action $subject? [y/N]: " confirm < /dev/tty; if [[ "$confirm" =~ ^[Yy]$ ]]; then return 0; else log "Действие отменено."; return 1; fi; }
+validate_client_name() { local name="$1"; if [[ -z "$name" ]]; then log_error "Имя клиента не может быть пустым."; return 1; fi; if [[ ${#name} -gt 63 ]]; then log_error "Имя клиента слишком длинное."; return 1; fi; if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then log_error "Имя клиента содержит недопустимые символы."; return 1; fi; return 0; }
+check_dependencies() { log "Проверка зависимостей..."; local ok=1; if [ ! -f "$SETUP_CONFIG_FILE" ]; then log_error " - $SETUP_CONFIG_FILE"; ok=0; fi; if [ ! -d "$AWG_DIR/venv" ]; then log_error " - $AWG_DIR/venv"; ok=0; fi; if [ ! -f "$AWGCFG_SCRIPT_PATH" ]; then log_error " - $AWGCFG_SCRIPT_PATH"; ok=0; fi; if [ ! -f "$SERVER_CONF_FILE" ]; then log_error " - $SERVER_CONF_FILE"; ok=0; fi; if [ "$ok" -eq 0 ]; then die "Не найдены файлы установки."; fi; if ! command -v awg &>/dev/null; then die "Команда 'awg' не найдена."; fi; if [ ! -x "$AWGCFG_SCRIPT_PATH" ]; then die "$AWGCFG_SCRIPT_PATH не найден/не исполняемый."; fi; if [ ! -x "$PYTHON_VENV_PATH" ]; then die "$PYTHON_VENV_PATH не найден/не исполняемый."; fi; log "Зависимости OK."; }
+run_awgcfg() { log "Запуск: awgcfg.py $*"; if ! "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" "$@"; then log_error "Ошибка выполнения awgcfg.py $*"; return 1; fi; return 0; }
+backup_configs() { log "Создание резервной копии..."; local bd="$AWG_DIR/backups"; mkdir -p "$bd" || die "Ошибка создания $bd"; local ts=$(date +%F_%T); local bf="$bd/awg_backup_${ts}.tar.gz"; local td; td=$(mktemp -d); mkdir -p "$td/server" "$td/clients"; cp -a "$SERVER_CONF_FILE" "$td/server/" 2>/dev/null; cp -a "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$td/clients/" 2>/dev/null || true; tar -czf "$bf" -C "$td" . || { rm -rf "$td"; die "Ошибка создания архива $bf"; }; rm -rf "$td"; chmod 600 "$bf" || log_warn "Ошибка chmod бэкапа"; find "$bd" -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | sort -nr | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f || log_warn "Ошибка удаления старых бэкапов"; log "Бэкап создан: $bf"; }
+restore_backup() { local bf="$1"; local bd="$AWG_DIR/backups"; if [ -z "$bf" ]; then if [ ! -d "$bd" ] || [ -z "$(ls -A "$bd")" ]; then die "Бэкапы не найдены."; fi; local backups; backups=$(find "$bd" -name "awg_backup_*.tar.gz" | sort -r); if [ -z "$backups" ]; then die "Бэкапы не найдены."; fi; echo "Доступные бэкапы:"; local i=1; local bl=(); while IFS= read -r f; do local fd; fd=$(basename "$f" | grep -o '[0-9]\{8\}-[0-9]\{6\}'); echo "$i) $(basename "$f") ($fd)"; bl[$i]="$f"; ((i++)); done <<< "$backups"; read -p "Номер для восстановления (0-отмена): " choice < /dev/tty; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -eq 0 ] || [ "$choice" -ge "$i" ]; then log "Отмена."; return 1; fi; bf="${bl[$choice]}"; fi; if [ ! -f "$bf" ]; then die "Файл $bf не найден."; fi; log "Восстановление из $bf"; if ! confirm_action "восстановить" "конфигурацию"; then return 1; fi; log "Создание бэкапа текущей..."; backup_configs; local td; td=$(mktemp -d); if ! tar -xzf "$bf" -C "$td"; then log_error "Ошибка распаковки $bf"; rm -rf "$td"; return 1; fi; log "Остановка сервиса..."; systemctl stop awg-quick@awg0 || log_warn "Сервис не остановлен."; if [ -d "$td/server" ]; then log "Восстановление конфига сервера..."; cp -a "$td/server/"* /etc/amnezia/amneziawg/ || log_error "Ошибка копирования server"; chmod 600 /etc/amnezia/amneziawg/*.conf; fi; if [ -d "$td/clients" ]; then log "Восстановление файлов клиентов..."; cp -a "$td/clients/"* "$AWG_DIR/" || log_error "Ошибка копирования clients"; chmod 600 "$AWG_DIR"/*.conf; fi; rm -rf "$td"; log "Запуск сервиса..."; if ! systemctl start awg-quick@awg0; then log_error "Ошибка запуска сервиса!"; systemctl status awg-quick@awg0 --no-pager | log_msg "ERROR"; return 1; fi; log "Восстановление завершено."; }
+modify_client() { local name="$1"; local param="$2"; local value="$3"; if [ -z "$name" ] || [ -z "$param" ] || [ -z "$value" ]; then log_error "Использование: modify <имя> <параметр> <значение>"; return 1; fi; if ! grep -q "^#_Name = ${name}$" "$SERVER_CONF_FILE"; then die "Клиент '$name' не найден."; fi; local cf="$AWG_DIR/$name.conf"; if [ ! -f "$cf" ]; then die "Файл $cf не найден."; fi; if ! grep -q "^${param} = " "$cf"; then log_error "Параметр '$param' не найден в $cf."; return 1; fi; log "Изменение '$param' на '$value' для '$name'..."; local bak="${cf}.bak-$(date +%F_%T)"; cp "$cf" "$bak" || log_warn "Ошибка бэкапа $bak"; log "Создан бэкап $bak"; if ! sed -i "s#^${param} = .*#${param} = ${value}#" "$cf"; then log_error "Ошибка sed. Восстановление..."; cp "$bak" "$cf" || log_warn "Ошибка восстановления."; return 1; fi; log "Параметр '$param' изменен."; if [[ "$param" == "AllowedIPs" || "$param" == "Address" || "$param" == "PublicKey" || "$param" == "Endpoint" ]]; then log "Перегенерация QR-кода..."; if command -v qrencode &>/dev/null; then if qrencode -o "$AWG_DIR/$name.png" < "$cf"; then log "QR-код обновлен."; else log_warn "Ошибка qrencode."; fi; else log_warn "qrencode не найден (apt install qrencode)."; fi; fi; return 0; }
+check_server() { log "Проверка состояния сервера..."; local ok=1; log "Статус сервиса:"; if ! systemctl status awg-quick@awg0 --no-pager; then ok=0; fi; log "Интерфейс awg0:"; if ! ip addr show awg0 &>/dev/null; then log_error " - Интерфейс не найден!"; ok=0; else ip addr show awg0 | log_msg "INFO"; fi; log "Прослушивание порта:"; source "$SETUP_CONFIG_FILE" &>/dev/null; local port=${AWG_PORT:-0}; if [ "$port" -eq 0 ]; then log_warn " - Не удалось определить порт."; else if ! ss -lunp | grep -q ":${port} "; then log_error " - Порт ${port}/udp НЕ прослушивается!"; ok=0; else log " - Порт ${port}/udp прослушивается."; fi; fi; log "Настройки ядра:"; local fwd=$(sysctl -n net.ipv4.ip_forward); if [ "$fwd" != "1" ]; then log_error " - IP Forwarding выключен ($fwd)!"; ok=0; else log " - IP Forwarding включен."; fi; log "Правила UFW:"; if command -v ufw &>/dev/null; then if ! ufw status | grep -q "${port}/udp"; then log_warn " - Правило UFW для ${port}/udp не найдено!"; else log " - Правило UFW для ${port}/udp есть."; fi; else log_warn " - UFW не установлен."; fi; log "Статус AmneziaWG:"; awg show | log_msg "INFO"; if [ "$ok" -eq 1 ]; then log "Проверка завершена: OK."; else log_error "Проверка завершена: ОБНАРУЖЕНЫ ПРОБЛЕМЫ!"; fi; return $ok; }
+list_clients() { log "Получение списка клиентов..."; local clients; clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sort) || clients=""; if [ -z "$clients" ]; then log "Клиенты не найдены."; return 0; fi; local verbose=0; if [ "$1" = "--verbose" ]; then verbose=1; fi; local awg_stat; awg_stat=$(awg show 2>/dev/null) || awg_stat=""; local act=0; local tot=0; if [ $verbose -eq 1 ]; then printf "%-20s|%-10s|%-10s|%-15s|%-15s|%s\n" "Имя клиента" "Конфиг" "QR-код" "Публ.ключ(10)" "IP-адрес" "Статус"; printf -- "-%.0s" {1..90}; echo; else printf "%-20s|%-10s|%-10s|%s\n" "Имя клиента" "Конфиг" "QR-код" "Статус"; printf -- "-%.0s" {1..55}; echo; fi; echo "$clients" | while IFS= read -r name; do name=$(echo "$name" | xargs); if [ -z "$name" ]; then continue; fi; ((tot++)); local cf="?"; local png="?"; local pk="-"; local ip="-"; local st="Не активен"; [ -f "$AWG_DIR/${name}.conf" ] && cf="✓"; [ -f "$AWG_DIR/${name}.png" ] && png="✓"; if [ "$cf" = "✓" ]; then pk=$(grep "^PublicKey = " "$AWG_DIR/${name}.conf" | cut -d' ' -f3 | head -c 10)"..."; ip=$(grep "^Address = " "$AWG_DIR/${name}.conf" | cut -d' ' -f3 | cut -d'/' -f1); if echo "$awg_stat" | grep -q "$pk"; then st="Активен"; ((act++)); fi; fi; if [ $verbose -eq 1 ]; then printf "%-20s|%-10s|%-10s|%-15s|%-15s|%s\n" "$name" "$cf" "$png" "$pk" "$ip" "$st"; else printf "%-20s|%-10s|%-10s|%s\n" "$name" "$cf" "$png" "$st"; fi; done | tee -a "$LOG_FILE"; echo ""; log "Всего клиентов: $tot, Активных: $act"; }
 
+# --- Основная логика ---
+# Предварительные проверки
+check_dependencies || exit 1
+cd "$AWG_DIR" || die "Ошибка перехода в $AWG_DIR"
 
-# --- Функция вывода помощи ---
-usage() {
-  # Выводим на stderr, так как это информация об ошибке использования
-  exec >&2
-  echo ""
-  echo "Скрипт управления клиентами AmneziaWG (v1.8)"
-  echo "=============================================="
-  echo "Использование: $0 <команда> [аргументы]"
-  echo ""
-  echo "Команды:"
-  echo "  add <имя_клиента>       - Добавить нового клиента (пира)."
-  echo "                            Имя должно содержать только латинские буквы,"
-  echo "                            цифры, дефис (-) или подчеркивание (_)."
-  echo ""
-  echo "  remove <имя_клиента>    - Удалить существующего клиента."
-  echo ""
-  echo "  list                    - Показать список текущих клиентов и статус их файлов."
-  echo ""
-  echo "  regen [имя_клиента]   - Перегенерировать файл .conf и QR-код."
-  echo "                            Если имя_клиента не указано, перегенерирует для ВСЕХ клиентов."
-  echo "                            ВНИМАНИЕ: Существующие файлы будут перезаписаны!"
-  echo ""
-  echo "  show                    - Показать текущий статус AmneziaWG (вывод 'awg show')."
-  echo ""
-  echo "  help                    - Показать это сообщение."
-  echo ""
-  echo "ВАЖНО: После команд 'add' и 'remove' необходимо перезапустить сервис:"
-  echo "  sudo systemctl restart awg-quick@awg0"
-  echo ""
-  exit 1
-}
-
-# --- Проверки перед выполнением ---
-
-# Проверка прав root
-if [ "$(id -u)" -ne 0 ]; then
-  echo "ERROR: Скрипт должен быть запущен с правами root (через sudo)." >&2
-  exit 1
-fi
-
-# Создаем директорию и файл лога (проверка записи была в log_msg)
-mkdir -p "$AWG_DIR" || exit 1
-touch "$LOG_FILE" || exit 1
-
-# Проверка, что установка была завершена
-log "Проверка наличия необходимых файлов..."
-files_ok=1
-if [ ! -f "$SETUP_CONFIG_FILE" ]; then log_error " - Отсутствует $SETUP_CONFIG_FILE (файл настроек)"; files_ok=0; fi
-if [ ! -d "$AWG_DIR/venv" ]; then log_error " - Отсутствует $AWG_DIR/venv (директория Python venv)"; files_ok=0; fi
-if [ ! -f "$AWGCFG_SCRIPT_PATH" ]; then log_error " - Отсутствует $AWGCFG_SCRIPT_PATH (скрипт генерации)"; files_ok=0; fi
-if [ ! -f "$SERVER_CONF_FILE" ]; then log_error " - Отсутствует $SERVER_CONF_FILE (конфиг сервера)"; files_ok=0; fi
-
-if [ "$files_ok" -eq 0 ]; then
-    die "Не найдены необходимые файлы установки AmneziaWG. Убедитесь, что 'install_amneziawg.sh' был успешно завершен."
-fi
-log "Все необходимые файлы найдены."
-
-# Проверка наличия команды awg
-if ! command -v awg &> /dev/null; then
-    die "Команда 'awg' не найдена. Убедитесь, что пакет 'amneziawg-tools' установлен."
-fi
-log "Команда 'awg' найдена."
-
-# Проверка доступности утилиты awgcfg.py
-if [ ! -x "$AWGCFG_SCRIPT_PATH" ]; then
-   die "Скрипт $AWGCFG_SCRIPT_PATH не найден или не является исполняемым."
-fi
-log "Скрипт $AWGCFG_SCRIPT_PATH найден и является исполняемым."
-
-# Проверка доступности Python в venv
-if [ ! -x "$PYTHON_VENV_PATH" ]; then
-   die "Интерпретатор Python $PYTHON_VENV_PATH не найден или не является исполняемым."
-fi
-log "Интерпретатор Python $PYTHON_VENV_PATH найден и является исполняемым."
-
-
-# Переход в рабочую директорию для корректной работы awgcfg.py с путями
-# Это важно, т.к. awgcfg.py ищет .main.config и _defclient.config в текущей директории
-cd "$AWG_DIR" || die "Не удалось перейти в рабочую директорию $AWG_DIR"
-log "Текущая директория: $(pwd)"
-
-# --- Обработка аргументов командной строки ---
-COMMAND=$1
-CLIENT_NAME=$2
-
-# Проверяем команду
-if [ -z "$COMMAND" ]; then usage; fi
+COMMAND=$1; shift # Первый аргумент - команда
+# Обработка опций (если они есть)
+VERBOSE_LIST=0; if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then VERBOSE_LIST=1; shift; fi
+CLIENT_NAME="$1" # Следующий аргумент (если есть) - имя клиента
+PARAM="$2"       # Следующий - параметр (для modify)
+VALUE="$3"       # Следующий - значение (для modify)
 
 log "Запуск команды '$COMMAND'..."
 
 case $COMMAND in
-  add)
-    if [ -z "$CLIENT_NAME" ]; then die "Не указано имя клиента для добавления. Используйте: $0 add <имя_клиента>"; fi
-    # Валидация имени клиента
-    if ! [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        die "Имя клиента '$CLIENT_NAME' содержит недопустимые символы. Разрешены: a-z, A-Z, 0-9, _, -."
-    fi
-    # Проверка, не существует ли уже такой клиент в конфиге сервера (ищем по #_Name = )
-    if grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then
-        die "Клиент с именем '$CLIENT_NAME' уже существует в $SERVER_CONF_FILE."
-    fi
-
-    log "Добавление нового клиента '$CLIENT_NAME'..."
-    # Выполняем awgcfg.py -a и проверяем код возврата
-    if "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" -a "$CLIENT_NAME"; then
-        log "Клиент '$CLIENT_NAME' успешно добавлен в конфигурацию сервера $SERVER_CONF_FILE."
-        log "Генерация/обновление файлов конфигурации и QR-кодов для ВСЕХ клиентов (включая нового)..."
-        # Выполняем awgcfg.py -c -q (без -n) и проверяем код возврата
-        if "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" -c -q; then
-             log "Файлы '$CLIENT_NAME.conf' и '$CLIENT_NAME.png' (и файлы других клиентов) созданы/обновлены в $AWG_DIR."
-             log "ВАЖНО: Перезапустите сервис AmneziaWG для применения изменений: sudo systemctl restart awg-quick@awg0"
-        else
-             # Ошибка произошла при генерации файлов, но клиент в конфиг сервера уже добавлен!
-             log_error "Ошибка при генерации файлов конфигурации/QR-кодов (awgcfg.py -c -q)."
-             log_warn "Клиент '$CLIENT_NAME' был добавлен в $SERVER_CONF_FILE, но его файлы .conf/.png могут быть не актуальны!"
-             log_warn "Попробуйте выполнить '$0 regen' для перегенерации файлов."
-        fi
-    else
-        # Ошибка произошла уже при добавлении клиента в конфиг сервера
-        log_error "Ошибка при добавлении клиента '$CLIENT_NAME' (awgcfg.py -a). Проверьте вывод команды выше."
-    fi
-    ;;
-
-  remove)
-    if [ -z "$CLIENT_NAME" ]; then die "Не указано имя клиента для удаления. Используйте: $0 remove <имя_клиента>"; fi
-     # Проверка, существует ли клиент в конфиге сервера перед удалением (ищем по #_Name = )
-    if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then
-        die "Клиент с именем '$CLIENT_NAME' не найден в $SERVER_CONF_FILE."
-    fi
-
-    log "Удаление клиента '$CLIENT_NAME'..."
-    # Выполняем awgcfg.py -d и проверяем код возврата
-    if "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" -d "$CLIENT_NAME"; then
-        log "Клиент '$CLIENT_NAME' успешно удален из конфигурации сервера $SERVER_CONF_FILE."
-        log "Удаление файлов клиента '$CLIENT_NAME.conf' и '$CLIENT_NAME.png'..."
-        # Используем -f чтобы не было ошибки, если файлов нет
-        rm -f "$AWG_DIR/$CLIENT_NAME.conf" "$AWG_DIR/$CLIENT_NAME.png"
-        log "Файлы '$CLIENT_NAME.conf' и '$CLIENT_NAME.png' удалены из '$AWG_DIR' (если существовали)."
-        log "ВАЖНО: Перезапустите сервис AmneziaWG для применения изменений: sudo systemctl restart awg-quick@awg0"
-    else
-        log_error "Ошибка при удалении клиента '$CLIENT_NAME' (awgcfg.py -d). Проверьте вывод команды выше."
-    fi
-    ;;
-
-  list)
-    # === Версия v1.6 ===
-    log "Получение списка клиентов из конфигурации $SERVER_CONF_FILE..."
-    # Ищем строки, начинающиеся с '#_Name = ' и извлекаем имя после знака равенства
-    clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //') || true # Добавляем || true на случай, если grep ничего не найдет
-
-    if [ -z "$clients" ]; then
-        log "Клиенты не найдены в конфигурационном файле (не найдены строки вида '#_Name = ...')."
-    else
-        log "Найденные клиенты:"
-        # Выводим каждого клиента на новой строке
-        echo "$clients" | while IFS= read -r client_name; do
-             # Удаляем возможные пробелы в начале/конце имени (на всякий случай)
-             client_name=$(echo "$client_name" | xargs)
-             if [ -z "$client_name" ]; then continue; fi # Пропускаем пустые строки, если вдруг будут
-
-             # Переменные для проверки наличия файлов
-             conf_exists="-"
-             png_exists="-"
-             [ -f "$AWG_DIR/${client_name}.conf" ] && conf_exists="✓"
-             [ -f "$AWG_DIR/${client_name}.png" ] && png_exists="✓"
-             # Используем printf для форматированного вывода
-             printf " - %-20s (файлы: conf %s, png %s)\n" "$client_name" "$conf_exists" "$png_exists" | tee -a "$LOG_FILE"
-        done
-    fi
-    # === КОНЕЦ ===
-    ;;
-
-  regen)
-    if [ -n "$CLIENT_NAME" ]; then
-        # Проверка существования клиента перед регенерацией (ищем по #_Name = )
-        if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then
-            die "Клиент с именем '$CLIENT_NAME' не найден в $SERVER_CONF_FILE. Невозможно перегенерировать файлы."
-        fi
-        log "Перегенерация файлов конфигурации и QR-кодов для ВСЕХ клиентов (включая '$CLIENT_NAME')..."
-        # Вызываем awgcfg.py -c -q (без -n) и проверяем код возврата
-        if "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" -c -q; then
-            log "Файлы .conf и .png для всех клиентов (включая '$CLIENT_NAME') перегенерированы в $AWG_DIR."
-        else
-            log_error "Ошибка при перегенерации файлов (awgcfg.py -c -q)."
-        fi
-    else
-        log "Перегенерация файлов конфигурации и QR-кодов для ВСЕХ клиентов..."
-        # Вызываем awgcfg.py -c -q и проверяем код возврата
-        if "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" -c -q; then
-            log "Файлы .conf и .png для всех клиентов перегенерированы в $AWG_DIR."
-        else
-            log_error "Ошибка при перегенерации файлов для всех клиентов (awgcfg.py -c -q)."
-        fi
-    fi
-    ;;
-
-  show)
-    log "Запрос текущего статуса AmneziaWG (awg show)..."
-    # Выполняем awg show и проверяем код возврата
-    if ! awg show; then
-        log_error "Ошибка при выполнении 'awg show'."
-    fi
-    ;;
-
-  help|--help|-h)
-    usage
-    ;;
-  *)
-    log_error "Неизвестная команда: '$COMMAND'"
-    usage
-    ;;
+  add) [ -z "$CLIENT_NAME" ] && die "Не указано имя клиента."; validate_client_name "$CLIENT_NAME" || exit 1; if grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' уже существует."; fi; log "Добавление '$CLIENT_NAME'..."; if run_awgcfg -a "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' добавлен."; log "Генерация файлов..."; if run_awgcfg -c -q; then log "Файлы для '$CLIENT_NAME' созданы/обновлены."; log "ВАЖНО: Перезапустите сервис: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка генерации файлов."; fi; else log_error "Ошибка добавления клиента."; fi ;;
+  remove) [ -z "$CLIENT_NAME" ] && die "Не указано имя клиента."; if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; if ! confirm_action "удалить" "клиента '$CLIENT_NAME'"; then exit 1; fi; log "Удаление '$CLIENT_NAME'..."; if run_awgcfg -d "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' удален из конфига."; log "Удаление файлов..."; rm -f "$AWG_DIR/$CLIENT_NAME.conf" "$AWG_DIR/$CLIENT_NAME.png"; log "Файлы удалены."; log "ВАЖНО: Перезапустите сервис: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка удаления клиента."; fi ;;
+  list) list_clients "$1" ;; # Передаем первый аргумент (может быть --verbose)
+  regen) log "Перегенерация файлов..."; if [ -n "$CLIENT_NAME" ]; then if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; log "Перегенерация для ВСЕХ (включая '$CLIENT_NAME')..."; else log "Перегенерация для ВСЕХ клиентов..."; fi; if run_awgcfg -c -q; then log "Файлы перегенерированы."; else log_error "Ошибка перегенерации."; fi ;;
+  modify) modify_client "$CLIENT_NAME" "$PARAM" "$VALUE" ;;
+  backup) backup_configs ;;
+  restore) restore_backup "$CLIENT_NAME" ;; # Используем CLIENT_NAME как [файл]
+  check|status) check_server ;;
+  show) log "Статус AmneziaWG..."; if ! awg show; then log_error "Ошибка awg show."; fi ;;
+  restart) log "Перезапуск сервиса..."; if ! confirm_action "перезапустить" "сервис AmneziaWG"; then exit 1; fi; if ! systemctl restart awg-quick@awg0; then log_error "Ошибка перезапуска."; systemctl status awg-quick@awg0 --no-pager | log_msg "ERROR"; exit 1; else log "Сервис перезапущен."; fi ;;
+  help|--help|-h|*) usage ;; # Любая неизвестная команда или help показывает usage
 esac
 
 log "Скрипт управления завершил работу."
