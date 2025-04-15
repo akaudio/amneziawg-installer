@@ -237,7 +237,7 @@ do bash /путь/к/install_amneziawg.sh --diagnostic
 
 ## 📝 Лицензия и Автор
 
-*   **Автор скриптов:** @bivlked (с помощью Claude AI) - [GitHub](https://github.com/bivlked)
+*   **Автор скриптов:** @bivlked [GitHub](https://github.com/bivlked)
 *   **Лицензия:** MIT License (см. файл `LICENSE`)
 
 ### Благодарности
