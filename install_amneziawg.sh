@@ -3,7 +3,7 @@
 # ==============================================================================
 # Скрипт для установки и настройки AmneziaWG на Ubuntu 24.04 LTS Minimal
 # Автор: @bivlked
-# Версия: 3.1
+# Версия: 3.2
 # Дата: 2025-04-16
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -18,9 +18,21 @@ UNINSTALL=0; HELP=0; DIAGNOSTIC=0; VERBOSE=0; CLI_PORT=""; CLI_SUBNET=""; CLI_DI
 while [[ $# -gt 0 ]]; do case $1 in --uninstall) UNINSTALL=1;; --help|-h) HELP=1;; --diagnostic) DIAGNOSTIC=1;; --verbose|-v) VERBOSE=1;; --port=*) CLI_PORT="${1#*=}";; --subnet=*) CLI_SUBNET="${1#*=}";; --allow-ipv6) CLI_DISABLE_IPV6=0;; --disallow-ipv6) CLI_DISABLE_IPV6=1;; --route-all) CLI_ROUTING_MODE=1;; --route-amnezia) CLI_ROUTING_MODE=2;; --route-custom=*) CLI_ROUTING_MODE=3; CLI_CUSTOM_ROUTES="${1#*=}";; *) echo "Неизвестный аргумент: $1"; HELP=1;; esac; shift; done
 
 # --- Функции ---
-log_msg() { local type="$1"; local msg="$2"; local ts; ts=$(date +'%F %T'); local safe_msg; safe_msg=$(echo "$msg" | sed 's/%/%%/g'); local entry="[$ts] $type: $safe_msg"; local color_start=""; local color_end="\033[0m"; case "$type" in INFO) color_start="\033[1;32m";; WARN) color_start="\033[1;33m";; ERROR) color_start="\033[1;31m";; *) color_start=""; color_end="";; esac; if ! mkdir -p "$(dirname "$LOG_FILE")" || ! echo "$entry" >> "$LOG_FILE"; then echo "[$ts] ERROR: Ошибка записи лога $LOG_FILE" >&2; fi; if [[ "$type" == "ERROR" || "$type" == "WARN" || "$VERBOSE" -eq 1 ]]; then printf "${color_start}%s${color_end}\n" "$entry" >&2; else printf "${color_start}%s${color_end}\n" "$entry"; fi; }
-log() { log_msg "INFO" "$1"; }; log_warn() { log_msg "WARN" "$1"; }; log_error() { log_msg "ERROR" "$1"; }; die() { log_error "КРИТИЧЕСКАЯ ОШИБКА: $1"; log_error "Установка прервана. Лог: $LOG_FILE"; exit 1; }
-show_help() { cat << EOF
+# Логирование (с восстановленной log_debug и без TTY-зависимости для цвета)
+log_msg() {
+    local type="$1"; local message="$2"; local timestamp; timestamp=$(date +'%Y-%m-%d %H:%M:%S');
+    local safe_message; safe_message=$(echo "$message" | sed 's/%/%%/g'); local log_entry="[$timestamp] $type: $safe_message"
+    local color_start=""; local color_end="\033[0m";
+    # Цвета выводим всегда, терминал сам разберется
+    case "$type" in INFO) color_start="\033[1;32m";; WARN) color_start="\033[1;33m";; ERROR) color_start="\033[1;31m";; DEBUG) color_start="\033[0;36m";; *) color_start=""; color_end="";; esac;
+    if ! mkdir -p "$(dirname "$LOG_FILE")" || ! echo "$log_entry" >> "$LOG_FILE"; then echo "[$timestamp] ERROR: Ошибка записи лога $LOG_FILE" >&2; fi
+    if [[ "$type" == "ERROR" || "$type" == "WARN" || "$type" == "DEBUG" || "$VERBOSE" -eq 1 ]]; then printf "${color_start}%s${color_end}\n" "$entry" >&2;
+    else printf "${color_start}%s${color_end}\n" "$entry"; fi
+}
+log() { log_msg "INFO" "$1"; }; log_warn() { log_msg "WARN" "$1"; }; log_error() { log_msg "ERROR" "$1"; }; log_debug() { log_msg "DEBUG" "$1"; }; die() { log_error "КРИТИЧЕСКАЯ ОШИБКА: $1"; log_error "Установка прервана. Лог: $LOG_FILE"; exit 1; }
+# Справка
+show_help() {
+    cat << EOF
 Использование: $0 [ОПЦИИ]
 Скрипт для автоматической установки и настройки AmneziaWG на Ubuntu 24.04.
 
@@ -46,13 +58,18 @@ show_help() { cat << EOF
 Репозиторий: https://github.com/bivlked/amneziawg-installer
 EOF
 exit 0; }
+# Управление состоянием и перезагрузка
 update_state() { local next_step=$1; mkdir -p "$(dirname "$STATE_FILE")"; echo "$next_step" > "$STATE_FILE" || die "Ошибка записи состояния"; log "Состояние: следующий шаг - $next_step"; }
 request_reboot() { local next_step=$1; update_state "$next_step"; echo "" >> "$LOG_FILE"; log_warn "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"; log_warn "!!! ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА СИСТЕМЫ !!!"; log_warn "!!! После перезагрузки, запустите скрипт снова командой:"; log_warn "!!! sudo bash $0 [с теми же параметрами, если были]"; log_warn "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"; echo "" >> "$LOG_FILE"; read -p "Перезагрузить сейчас? [y/N]: " confirm < /dev/tty; if [[ "$confirm" =~ ^[Yy]$ ]]; then log "Инициирована перезагрузка..."; sleep 5; if ! reboot; then die "Команда reboot не удалась."; fi; exit 1; else log "Перезагрузка отменена. Перезагрузитесь вручную и запустите скрипт снова."; exit 1; fi; }
+# Проверки окружения
 check_os_version() { log "Проверка ОС..."; if ! command -v lsb_release &> /dev/null; then log_warn "lsb_release не найден."; return 0; fi; local os_id; os_id=$(lsb_release -si); local os_ver; os_ver=$(lsb_release -sr); if [[ "$os_id" != "Ubuntu" || "$os_ver" != "24.04" ]]; then log_warn "Обнаружена $os_id $os_ver. Скрипт для Ubuntu 24.04."; read -p "Продолжить? [y/N]: " confirm < /dev/tty; if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Отмена."; fi; else log "ОС: Ubuntu $os_ver (OK)"; fi; }
 check_free_space() { log "Проверка места..."; local req=2048; local avail; avail=$(df -m / | awk 'NR==2 {print $4}'); if [[ -z "$avail" ]]; then log_warn "Не удалось определить свободное место."; return 0; fi; if [ "$avail" -lt "$req" ]; then log_warn "Доступно $avail МБ. Рекомендуется >= $req МБ."; read -p "Продолжить? [y/N]: " confirm < /dev/tty; if ! [[ "$confirm" =~ ^[Yy]$ ]]; then die "Отмена."; fi; else log "Свободно: $avail МБ (OK)"; fi; }
 check_port_availability() { local port=$1; log "Проверка порта $port..."; local proc; proc=$(ss -lunp | grep ":${port} "); if [[ -n "$proc" ]]; then log_error "Порт ${port}/udp уже используется! Процесс: $proc"; return 1; else log "Порт $port/udp свободен."; return 0; fi; }
+# Установка пакетов
 install_packages() { local packages=("$@"); local to_install=(); local pkg; log "Проверка пакетов: ${packages[*]}..."; for pkg in "${packages[@]}"; do if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then to_install+=("$pkg"); fi; done; if [ ${#to_install[@]} -eq 0 ]; then log "Все пакеты уже установлены."; return 0; fi; log "Установка: ${to_install[*]}..."; apt update -y || log_warn "Не удалось обновить apt."; DEBIAN_FRONTEND=noninteractive apt install -y "${to_install[@]}" || die "Ошибка установки пакетов."; log "Пакеты установлены."; }
+# Очистка apt
 cleanup_apt() { log "Очистка apt..."; apt-get clean || log_warn "Ошибка apt-get clean"; rm -rf /var/lib/apt/lists/* || log_warn "Ошибка rm /var/lib/apt/lists/*"; log "Кэш apt очищен."; }
+# Настройка IPv6 и Маршрутизации
 configure_ipv6() { if [[ "$CLI_DISABLE_IPV6" != "default" ]]; then DISABLE_IPV6=$CLI_DISABLE_IPV6; log "IPv6 из CLI: $DISABLE_IPV6"; else read -p "Отключить IPv6? [Y/n]: " dis_ipv6 < /dev/tty; if [[ "$dis_ipv6" =~ ^[Nn]$ ]]; then DISABLE_IPV6=0; else DISABLE_IPV6=1; fi; fi; export DISABLE_IPV6; log "Отключение IPv6: $(if [ "$DISABLE_IPV6" -eq 1 ]; then echo 'Да'; else echo 'Нет'; fi)"; }
 configure_routing_mode() { if [[ "$CLI_ROUTING_MODE" != "default" ]]; then ALLOWED_IPS_MODE=$CLI_ROUTING_MODE; if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; if [ -z "$ALLOWED_IPS" ]; then die "Не указаны сети для --route-custom."; fi; fi; log "Режим маршрутизации из CLI: $ALLOWED_IPS_MODE"; else echo ""; log "Выберите режим маршрутизации:"; echo "  1) Весь трафик (0.0.0.0/0)"; echo "  2) Список Amnezia+DNS (умолч.)"; echo "  3) Только указанные сети"; read -p "Выбор [2]: " r_mode < /dev/tty; ALLOWED_IPS_MODE=${r_mode:-2}; fi; case "$ALLOWED_IPS_MODE" in 1) ALLOWED_IPS="0.0.0.0/0"; log "Выбран режим: Весь трафик.";; 3) if [[ -z "$CLI_CUSTOM_ROUTES" ]]; then read -p "Введите сети (a.b.c.d/xx,...): " custom < /dev/tty; ALLOWED_IPS=$custom; else ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi; if ! echo "$ALLOWED_IPS" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}(,([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2})*$'; then log_warn "Формат сетей ('$ALLOWED_IPS') некорректен."; fi; log "Выбран режим: Пользовательский ($ALLOWED_IPS)";; *) ALLOWED_IPS_MODE=2; ALLOWED_IPS="0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32, 1.1.1.1/32"; log "Выбран режим: Список Amnezia+DNS.";; esac; if [ -z "$ALLOWED_IPS" ]; then die "Не удалось определить AllowedIPs."; fi; if [[ "$ALLOWED_IPS_MODE" -eq 3 ]]; then ALLOWED_IPS_SAVE=$(echo "$ALLOWED_IPS" | sed 's/,/\\,/g'); else ALLOWED_IPS_SAVE="$ALLOWED_IPS"; fi; export ALLOWED_IPS_MODE ALLOWED_IPS ALLOWED_IPS_SAVE; }
 run_awgcfg() { log_debug "Вызов run_awgcfg из $(pwd): $*"; if [ ! -x "$PYTHON_VENV" ] || [ ! -x "$AWGCFG_SCRIPT" ]; then log_error "Python venv или awgcfg.py недоступен."; return 1; fi; if ! (cd "$AWG_DIR" && "$PYTHON_VENV" "$AWGCFG_SCRIPT" "$@"); then log_error "Ошибка выполнения awgcfg.py $*"; return 1; fi; log_debug "awgcfg.py $* выполнен успешно."; return 0; }
@@ -61,9 +78,7 @@ check_service_status() { log "Проверка статуса сервиса..."
 # --- Шаг 0: Инициализация ---
 initialize_setup() {
     mkdir -p "$AWG_DIR" || die "Ошибка создания $AWG_DIR"; chown root:root "$AWG_DIR";
-    # Настраиваем логирование
     touch "$LOG_FILE" || die "Не удалось создать лог-файл $LOG_FILE"; chmod 640 "$LOG_FILE";
-    # Не используем tee exec
     log "--- НАЧАЛО УСТАНОВКИ / ПРОВЕРКА СОСТОЯНИЯ ---"; log "### ШАГ 0: Инициализация и проверка параметров ###";
     if [ "$(id -u)" -ne 0 ]; then die "Запустите скрипт от root (sudo bash $0)."; fi
     cd "$AWG_DIR" || die "Ошибка перехода в $AWG_DIR"; log "Рабочая директория: $AWG_DIR"; log "Лог файл: $LOG_FILE";
@@ -74,34 +89,30 @@ initialize_setup() {
     # Загрузка конфига
     if [[ -f "$CONFIG_FILE" ]]; then
         log "Найден файл конфигурации $CONFIG_FILE. Загрузка настроек..."; config_exists=1;
-        # Загружаем переменные, присваивая дефолты если переменная пуста
         source "$CONFIG_FILE" || log_warn "Не удалось полностью загрузить настройки из $CONFIG_FILE.";
-        AWG_PORT=${AWG_PORT:-$default_port}; AWG_TUNNEL_SUBNET=${AWG_TUNNEL_SUBNET:-$default_subnet};
-        DISABLE_IPV6=${DISABLE_IPV6:-"default"}; ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}; ALLOWED_IPS=${ALLOWED_IPS:-""};
+        AWG_PORT=${AWG_PORT:-$default_port}; AWG_TUNNEL_SUBNET=${AWG_TUNNEL_SUBNET:-$default_subnet}; DISABLE_IPV6=${DISABLE_IPV6:-"default"}; ALLOWED_IPS_MODE=${ALLOWED_IPS_MODE:-"default"}; ALLOWED_IPS=${ALLOWED_IPS:-""};
         log "Настройки из файла загружены.";
     else
-        log "Файл конфигурации $CONFIG_FILE не найден.";
-        AWG_PORT=$default_port; AWG_TUNNEL_SUBNET=$default_subnet;
-        DISABLE_IPV6="default"; ALLOWED_IPS_MODE="default"; ALLOWED_IPS="";
+        log "Файл конфигурации $CONFIG_FILE не найден."; AWG_PORT=$default_port; AWG_TUNNEL_SUBNET=$default_subnet; DISABLE_IPV6="default"; ALLOWED_IPS_MODE="default"; ALLOWED_IPS="";
     fi
     # Переопределение из CLI
     AWG_PORT=${CLI_PORT:-$AWG_PORT}; AWG_TUNNEL_SUBNET=${CLI_SUBNET:-$AWG_TUNNEL_SUBNET};
     if [[ "$CLI_DISABLE_IPV6" != "default" ]]; then DISABLE_IPV6=$CLI_DISABLE_IPV6; fi
     if [[ "$CLI_ROUTING_MODE" != "default" ]]; then ALLOWED_IPS_MODE=$CLI_ROUTING_MODE; if [[ "$CLI_ROUTING_MODE" -eq 3 ]]; then ALLOWED_IPS=$CLI_CUSTOM_ROUTES; fi; fi
 
-    # Запрашиваем только если конфига НЕ БЫЛО
-    if [[ "$config_exists" -eq 0 ]]; then
-         log "Запрос настроек у пользователя.";
-         read -p "Введите UDP порт AmneziaWG (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty; if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi; if ! [[ "$AWG_PORT" =~ ^[0-9]+$ ]] || [ "$AWG_PORT" -lt 1024 ] || [ "$AWG_PORT" -gt 65535 ]; then die "Некорректный порт."; fi
-         read -p "Введите подсеть туннеля [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty; if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi; if ! [[ "$AWG_TUNNEL_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then printf "ERROR: Некорр. подсеть: '$AWG_TUNNEL_SUBNET'.\n">&2; exit 1; fi
-         # Запрашиваем остальные, только если не заданы через CLI
-         if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
-         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
+    # Запрашиваем, если конфига не было ИЛИ не все задано через CLI
+    if [[ "$config_exists" -eq 0 || "$CLI_PORT" == "" || "$CLI_SUBNET" == "" || "$CLI_DISABLE_IPV6" == "default" || "$CLI_ROUTING_MODE" == "default" ]]; then
+        log "Запрос/Подтверждение настроек у пользователя.";
+        read -p "Введите UDP порт AmneziaWG (1024-65535) [${AWG_PORT}]: " input_port < /dev/tty; if [[ -n "$input_port" ]]; then AWG_PORT=$input_port; fi; if ! [[ "$AWG_PORT" =~ ^[0-9]+$ ]] || [ "$AWG_PORT" -lt 1024 ] || [ "$AWG_PORT" -gt 65535 ]; then die "Некорректный порт."; fi
+        read -p "Введите подсеть туннеля [${AWG_TUNNEL_SUBNET}]: " input_subnet < /dev/tty; if [[ -n "$input_subnet" ]]; then AWG_TUNNEL_SUBNET=$input_subnet; fi; if ! [[ "$AWG_TUNNEL_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then printf "ERROR: Некорр. подсеть: '$AWG_TUNNEL_SUBNET'.\n">&2; exit 1; fi
+        # Запрашиваем остальные, только если не заданы через CLI
+        if [[ "$DISABLE_IPV6" == "default" ]]; then configure_ipv6; fi
+        if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
     else
-         # Если конфиг был, но что-то не задано, устанавливаем дефолты
-         if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi
-         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi
-         log "Используются настройки из $CONFIG_FILE или CLI.";
+         # Если все задано через CLI/config, просто устанавливаем переменные
+         log "Используются настройки из $CONFIG_FILE или аргументов CLI.";
+         if [[ "$DISABLE_IPV6" == "default" ]]; then DISABLE_IPV6=1; fi # Дефолт, если не загрузился
+         if [[ "$ALLOWED_IPS_MODE" == "default" ]]; then configure_routing_mode; fi # Запустит с дефолтом
     fi
 
     # Финальная проверка порта
@@ -201,7 +212,7 @@ step7_start_service_and_extras() {
     log "Включение и запуск awg-quick@awg0..."; systemctl enable --now awg-quick@awg0 || die "Ошибка enable --now."; log "Сервис включен и запущен."
     log "Проверка статуса сервиса..."; sleep 3; check_service_status || die "Проверка статуса сервиса не пройдена."
     log "Настройка дополнительных компонентов...";
-    # Убрали setup_fail2ban
+    # setup_fail2ban; # Fail2Ban убран из автоустановки
     setup_auto_updates; setup_backups; setup_log_rotation;
     log "Шаг 7 завершен."; update_state 99;
 }
@@ -221,7 +232,7 @@ step99_finish() {
 # Функция деинсталляции
 step_uninstall() {
     log "### ДЕИНСТАЛЛЯЦИЯ AMNEZIAWG ###";
-    # Запрос подтверждения теперь обязателен и не зависит от интерактивности для безопасности
+    # Запрос подтверждения теперь обязателен
     echo ""; echo "ВНИМАНИЕ! Полное удаление AmneziaWG и конфигураций."; echo "Процесс необратим!"; echo "";
     read -p "Уверены? (введите 'yes'): " confirm < /dev/tty; if [[ "$confirm" != "yes" ]]; then log "Деинсталляция отменена."; exit 1; fi;
     read -p "Создать бэкап перед удалением? [Y/n]: " backup < /dev/tty;
@@ -259,6 +270,7 @@ setup_improved_firewall() {
         log "UFW неактивен. Настройка..."; ufw default deny incoming; ufw default allow outgoing;
         ufw limit 22/tcp comment "SSH Rate Limit"; ufw allow "${AWG_PORT}/udp" comment "AmneziaWG VPN"; log "Правила UFW добавлены.";
         log_warn "--- ВКЛЮЧЕНИЕ UFW ---"; log_warn "Проверьте SSH доступ!"; sleep 5;
+        # Подтверждение обязательно для включения
         read -p "Включить UFW? [y/N]: " confirm_ufw < /dev/tty; if ! [[ "$confirm_ufw" =~ ^[Yy]$ ]]; then log_warn "UFW не включен."; return 1; fi;
         if ! ufw enable <<< "y"; then die "Ошибка включения UFW."; fi; log "UFW включен.";
     else
@@ -274,40 +286,92 @@ secure_files() {
 }
 setup_auto_updates() {
     log "Настройка автоматических обновлений безопасности..."; if ! command -v unattended-upgrade &>/dev/null; then install_packages unattended-upgrades apt-listchanges; fi; if ! command -v unattended-upgrade &>/dev/null; then log_warn "Пропускаем авто-обновления."; return 1; fi
-    if DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades; then cat > /etc/apt/apt.conf.d/20auto-upgrades << EOF || { log_warn "Ошибка 20auto-upgrades"; return 1; }; APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::AutocleanInterval "7";\nAPT::Periodic::Download-Upgradeable-Packages "1";\nUnattended-Upgrade::Remove-Unused-Kernel-Packages "true";\nUnattended-Upgrade::Remove-Unused-Dependencies "true";\nEOF; log "Авто-обновления настроены."; else log_warn "Ошибка dpkg-reconfigure unattended-upgrades."; fi
+    if DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades; then
+        # Полный и правильный cat << EOF
+        cat > /etc/apt/apt.conf.d/20auto-upgrades << EOF || { log_warn "Ошибка записи 20auto-upgrades"; return 1; }
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+APT::Periodic::Download-Upgradeable-Packages "1";
+Unattended-Upgrade::Allowed-Origins {
+        "\${distro_id}:\${distro_codename}-security";
+//      "\${distro_id}:\${distro_codename}-updates";
+//      "\${distro_id}:\${distro_codename}-proposed";
+//      "\${distro_id}:\${distro_codename}-backports";
+};
+Unattended-Upgrade::Package-Blacklist {
+    // "vim";
+};
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+//Unattended-Upgrade::Automatic-Reboot "false"; // По умолчанию false
+//Unattended-Upgrade::Automatic-Reboot-Time "02:00";
+EOF
+        log "Автоматические обновления безопасности настроены.";
+    else log_warn "Ошибка dpkg-reconfigure unattended-upgrades."; fi
 }
 setup_backups() {
     log "Настройка резервного копирования..."; local bd="$AWG_DIR/backups"; mkdir -p "$bd" || die "Ошибка mkdir $bd"; chmod 700 "$bd"; local bs="/usr/local/bin/backup_amneziawg.sh";
+    # Полный и правильный cat << 'EOF'
     cat > "$bs" << 'EOF' || die "Ошибка записи $bs";
 #!/bin/bash
-AWG_DIR="/root/awg"; BACKUP_DIR="$AWG_DIR/backups"; SERVER_CONF_DIR="/etc/amnezia/amneziawg"; TIMESTAMP=$(date +%Y%m%d-%H%M%S); BACKUP_FILE="$BACKUP_DIR/awg_backup_${TIMESTAMP}.tar.gz"; LOG_FILE="$BACKUP_DIR/backup.log"; MAX_BACKUPS=10;
-echo "[$TIMESTAMP] Starting backup..." >> "$LOG_FILE"; TEMP_DIR=$(mktemp -d); if [ $? -ne 0 ]; then echo "[$TIMESTAMP] ERROR: Failed to create temp dir." >> "$LOG_FILE"; exit 1; fi; mkdir -p "$TEMP_DIR/server_conf" "$TEMP_DIR/client_conf";
-cp -a "$SERVER_CONF_DIR/"* "$TEMP_DIR/server_conf/" 2>> "$LOG_FILE"; cp -a "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$AWG_DIR"/setup.conf "$TEMP_DIR/client_conf/" 2>> "$LOG_FILE" || true;
-if ! tar -czf "$BACKUP_FILE" -C "$TEMP_DIR" . ; then echo "[$TIMESTAMP] ERROR: Failed to create archive $BACKUP_FILE" >> "$LOG_FILE"; rm -rf "$TEMP_DIR"; exit 1; fi; rm -rf "$TEMP_DIR"; chmod 600 "$BACKUP_FILE" || echo "[$TIMESTAMP] WARN: Failed to chmod backup file." >> "$LOG_FILE";
-find "$BACKUP_DIR" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | sort -nr | tail -n +$(($MAX_BACKUPS + 1)) | cut -d' ' -f2- | xargs -r rm -f;
-echo "[$TIMESTAMP] Backup created: $BACKUP_FILE" >> "$LOG_FILE"; logger -t amneziawg-backup "Backup created: $BACKUP_FILE"; exit 0;
+AWG_DIR="/root/awg"
+BACKUP_DIR="$AWG_DIR/backups"
+SERVER_CONF_DIR="/etc/amnezia/amneziawg"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/awg_backup_${TIMESTAMP}.tar.gz"
+LOG_FILE="$BACKUP_DIR/backup.log"
+MAX_BACKUPS=10 # Сколько бэкапов хранить
+
+echo "[$TIMESTAMP] Starting backup..." >> "$LOG_FILE"
+TEMP_DIR=$(mktemp -d)
+if [ $? -ne 0 ]; then echo "[$TIMESTAMP] ERROR: Failed to create temp dir." >> "$LOG_FILE"; exit 1; fi
+mkdir -p "$TEMP_DIR/server_conf" "$TEMP_DIR/client_conf"
+cp -a "$SERVER_CONF_DIR/"* "$TEMP_DIR/server_conf/" 2>> "$LOG_FILE"
+# Копируем setup.conf тоже
+cp -a "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$AWG_DIR"/setup.conf "$TEMP_DIR/client_conf/" 2>> "$LOG_FILE" || true
+if ! tar -czf "$BACKUP_FILE" -C "$TEMP_DIR" . ; then echo "[$TIMESTAMP] ERROR: Failed to create archive $BACKUP_FILE" >> "$LOG_FILE"; rm -rf "$TEMP_DIR"; exit 1; fi
+rm -rf "$TEMP_DIR"
+chmod 600 "$BACKUP_FILE" || echo "[$TIMESTAMP] WARN: Failed to chmod backup file." >> "$LOG_FILE"
+# Удаление старых бэкапов
+find "$BACKUP_DIR" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n' | sort -nr | tail -n +$(($MAX_BACKUPS + 1)) | cut -d' ' -f2- | xargs -r rm -f
+echo "[$TIMESTAMP] Backup created: $BACKUP_FILE" >> "$LOG_FILE"
+logger -t amneziawg-backup "Backup created: $BACKUP_FILE"
+exit 0
 EOF
     chmod +x "$bs" || die "Ошибка chmod $bs"; echo "0 3 * * * root $bs" > /etc/cron.d/backup_amneziawg || log_warn "Ошибка cron"; log "Ежедневный бэкап в $bd настроен."; log "Создание первого бэкапа..."; if "$bs"; then log "OK."; else log_warn "Ошибка первого бэкапа."; fi
 }
 setup_log_rotation() {
-    log "Настройка ротации логов..."; cat > /etc/logrotate.d/amneziawg-installer << EOF || log_warn "Ошибка logrotate";
+    log "Настройка ротации логов...";
+    # Полный и правильный cat << EOF
+    cat > /etc/logrotate.d/amneziawg-installer << EOF || log_warn "Ошибка записи logrotate";
 $LOG_FILE
 $AWG_DIR/manage_amneziawg.log
 $AWG_DIR/backups/backup.log {
-    weekly; rotate 12; compress; delaycompress; missingok; notifempty; create 640 root adm; su root adm;
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root adm
+    su root adm
 }
 EOF
     log "Ротация логов настроена.";
 }
 create_diagnostic_report() {
     log "Создание диагностики..."; local rf="$AWG_DIR/diag_$(date +%F_%T).txt";
-    { echo "=== AMNEZIAWG DIAGNOSTIC REPORT ==="; date; hostname; echo "--- OS ---"; lsb_release -ds; uname -a; echo ""; echo "--- Configuration ($CONFIG_FILE) ---"; cat "$CONFIG_FILE" 2>/dev/null || echo "N/A"; echo "";
-      echo "--- Service Status ---"; systemctl status awg-quick@awg0 --no-pager -l; echo ""; echo "--- Network Interfaces ---"; ip a; echo ""; echo "--- AWG Status ---"; awg show; echo "";
-      echo "--- Listening Ports ---"; ss -lunp; echo ""; echo "--- Firewall Status ---"; if command -v ufw &>/dev/null; then ufw status verbose; else echo "UFW N/A"; fi; echo "";
-      echo "--- Routing Table ---"; ip route; echo ""; echo "--- Kernel Params ---"; sysctl net.ipv4.ip_forward net.ipv6.conf.all.disable_ipv6 2>/dev/null; sysctl -a | grep 'rp_filter\|icmp_.*' | grep ipv4 ; echo "";
-      echo "--- AWG Journal (last 50) ---"; journalctl -u awg-quick@awg0 -n 50 --no-pager --output=cat; echo ""; echo "--- Client List ---"; grep "^#_Name = " "$SERVER_CONF_FILE" | sed 's/^#_Name = //' || echo "N/A"; echo "";
-      echo "--- DKMS Status ---"; dkms status 2>/dev/null || echo "N/A"; echo ""; echo "--- Module Info ---"; modinfo amneziawg 2>/dev/null || echo "N/A"; echo ""; echo "=== END ===";
-    } > "$rf" || log_error "Ошибка записи отчета."; chmod 600 "$rf"; log "Отчет: $rf";
+    # Полный и правильный сбор информации
+    {
+        echo "=== AMNEZIAWG DIAGNOSTIC REPORT ==="; date; hostname; echo "--- OS ---"; lsb_release -ds; uname -a; echo ""; echo "--- Configuration ($CONFIG_FILE) ---"; cat "$CONFIG_FILE" 2>/dev/null || echo "File not found"; echo "";
+        echo "--- Service Status ---"; systemctl status awg-quick@awg0 --no-pager -l; echo ""; echo "--- Network Interfaces ---"; ip a; echo ""; echo "--- AWG Status ---"; awg show; echo "";
+        echo "--- Listening Ports ---"; ss -lunp; echo ""; echo "--- Firewall Status ---"; if command -v ufw &>/dev/null; then ufw status verbose; else echo "UFW N/A"; fi; echo "";
+        echo "--- Routing Table ---"; ip route; echo ""; echo "--- Kernel Params ---"; sysctl net.ipv4.ip_forward net.ipv6.conf.all.disable_ipv6 2>/dev/null; sysctl -a | grep 'rp_filter\|icmp_.*' | grep ipv4 ; echo "";
+        echo "--- AWG Journal (last 50) ---"; journalctl -u awg-quick@awg0 -n 50 --no-pager --output=cat; echo ""; echo "--- Client List ---"; grep "^#_Name = " "$SERVER_CONF_FILE" | sed 's/^#_Name = //' || echo "N/A"; echo "";
+        echo "--- DKMS Status ---"; dkms status 2>/dev/null || echo "N/A"; echo ""; echo "--- Module Info ---"; modinfo amneziawg 2>/dev/null || echo "N/A"; echo ""; echo "=== END ===";
+    } > "$rf" || log_error "Ошибка записи отчета.";
+    chmod 600 "$rf" || log_warn "Ошибка chmod отчета."; log "Отчет: $rf";
 }
 
 # --- Основной цикл выполнения ---
@@ -317,7 +381,7 @@ if [ "$UNINSTALL" -eq 1 ]; then step_uninstall; fi
 if [ "$DIAGNOSTIC" -eq 1 ]; then create_diagnostic_report; exit 0; fi
 if [ "$VERBOSE" -eq 1 ]; then set -x; fi
 
-initialize_setup # Основная инициализация для установки
+initialize_setup # Инициализация
 current_step=0 # Переопределяем после initialize_setup
 if [[ -f "$STATE_FILE" ]]; then current_step=$(cat "$STATE_FILE"); fi
 if ! [[ "$current_step" =~ ^[0-9]+$ ]]; then current_step=1; fi # На случай поврежденного файла
@@ -332,14 +396,8 @@ while (( current_step < 99 )); do
         5) step5_setup_python; current_step=6 ;;
         6) step6_generate_configs; current_step=7 ;;
         7) step7_start_service_and_extras; current_step=99 ;;
-        *) die "Ошибка: Неизвестный шаг состояния $current_step.";;
+        *) die "Ошибка: Неизвестный шаг $current_step.";;
     esac
-    # Если шаг требовал перезагрузки, скрипт завершится внутри request_reboot
 done
-
-# Вызов финального шага, если цикл завершился нормально (current_step == 99)
-if (( current_step == 99 )); then
-    step99_finish
-fi
-
+if (( current_step == 99 )); then step99_finish; fi
 exit 0
