@@ -40,7 +40,7 @@ list_clients() {
     if [ $verbose -eq 1 ]; then printf "%-20s | %-7s | %-7s | %-15s | %-15s | %s\n" "Имя клиента" "Conf" "QR" "IP-адрес" "Ключ (нач.)" "Статус"; printf -- "-%.0s" {1..85}; echo; else printf "%-20s | %-7s | %-7s | %s\n" "Имя клиента" "Conf" "QR" "Статус"; printf -- "-%.0s" {1..50}; echo; fi
     echo "$clients" | while IFS= read -r name; do
         name=$(echo "$name" | xargs); if [ -z "$name" ]; then continue; fi; ((tot++));
-        local cf="?"; local png="?"; local pk="-"; local ip="-"; local st="Нет данных"; local color_start="\033[0;37m"; local color_end="\033[0m"; if [[ "$NO_COLOR" -eq 1 ]]; then color_start=""; color_end=""; fi;
+        local cf="?"; local png="?"; local pk="-"; local ip="-"; local st="Нет данных"; local color_start="\033[0m"; local color_end="\033[0m"; if [[ "$NO_COLOR" -eq 0 ]]; then color_start="\033[0;37m"; fi; # Серый по умолчанию
         [ -f "$AWG_DIR/${name}.conf" ] && cf="✓"; [ -f "$AWG_DIR/${name}.png" ] && png="✓";
         if [ "$cf" = "✓" ]; then
             ip=$(grep -oP 'Address = \K[0-9\.]+' "$AWG_DIR/${name}.conf" 2>/dev/null) || ip="?"
@@ -77,7 +77,7 @@ log "Запуск команды '$COMMAND'..."
 case $COMMAND in
     add)      [ -z "$CLIENT_NAME" ] && die "Не указ. имя."; validate_client_name "$CLIENT_NAME" || exit 1; if grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' уже есть."; fi; log "Добавление '$CLIENT_NAME'..."; if run_awgcfg -a "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' добавлен."; log "Генерация файлов..."; if run_awgcfg -c -q; then log "Файлы созданы/обновлены."; log "ВАЖНО: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка генерации файлов."; log_warn "Клиент добавлен, но файлы не акт-ны!"; fi; else log_error "Ошибка добавления клиента."; fi ;;
     remove)   [ -z "$CLIENT_NAME" ] && die "Не указ. имя."; if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; if ! confirm_action "удалить" "клиента '$CLIENT_NAME'"; then exit 1; fi; log "Удаление '$CLIENT_NAME'..."; if run_awgcfg -d "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' удален."; log "Удаление файлов..."; rm -f "$AWG_DIR/$CLIENT_NAME.conf" "$AWG_DIR/$CLIENT_NAME.png"; log "Файлы удалены."; log "ВАЖНО: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка удаления."; fi ;;
-    list)     list_clients "${ARGS[0]}" ;; # Передаем первый аргумент как возможный флаг -v / --verbose
+    list)     list_clients "$CLIENT_NAME" ;; # $CLIENT_NAME содержит флаг -v, если он был
     regen)    log "Перегенерация файлов..."; if [ -n "$CLIENT_NAME" ]; then if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; log "Перегенерация ВСЕХ (включая '$CLIENT_NAME')..."; else log "Перегенерация ВСЕХ..."; fi; if run_awgcfg -c -q; then log "Файлы перегенерированы."; else log_error "Ошибка перегенерации."; fi ;;
     modify)   modify_client "$CLIENT_NAME" "$PARAM" "$VALUE" ;;
     backup)   backup_configs ;;
