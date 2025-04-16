@@ -3,10 +3,6 @@
 ![Status](https://img.shields.io/badge/Status-Active-success)
 [![Version](https://img.shields.io/badge/Version-2.1-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
 
-<p align="center">
-  <img src="https://www.bondarev.net/awg_logo.jpg" alt="AmneziaWG Installer Logo" width="250">
-</p>
-
 <h1 align="center">Автоматическая установка и управление AmneziaWG</h1>
 
 <p align="center">
