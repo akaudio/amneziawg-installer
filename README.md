@@ -1,7 +1,7 @@
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-orange)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE) 
 ![Status](https://img.shields.io/badge/Status-Active-success)
-[![Version](https://img.shields.io/badge/Version-2.0-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
+[![Version](https://img.shields.io/badge/Version-2.1-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
 
 <p align="center">
   <img src="https://www.bondarev.net/awg_logo.jpg" alt="AmneziaWG Installer Logo" width="250">
