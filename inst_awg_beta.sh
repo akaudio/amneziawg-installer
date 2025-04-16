@@ -195,7 +195,7 @@ step6_generate_configs() {
 step7_start_service_and_extras() {
     update_state 7; log "### ШАГ 7: Запуск сервиса и доп. настройки ###";
     # Отладочная проверка перед запуском шага 7
-    debug_check_setup_conf "В начале Шага 7"
+    debug_check_setup_conf "В начале Шага 7" # <--- ДОБАВЛЕНА ПРОВЕРКА
 
     log "Включение и запуск awg-quick@awg0..."; systemctl enable --now awg-quick@awg0 || die "Ошибка enable --now."; log "Сервис включен и запущен."
     debug_check_setup_conf "После запуска сервиса" # <--- ПРОВЕРКА 1
@@ -204,8 +204,10 @@ step7_start_service_and_extras() {
     debug_check_setup_conf "После check_service_status" # <--- ПРОВЕРКА 2
 
     log "Настройка дополнительных компонентов...";
-    setup_fail2ban;
-    debug_check_setup_conf "После setup_fail2ban" # <--- ПРОВЕРКА 3
+    # === ВРЕМЕННО КОММЕНТИРУЕМ FAIL2BAN ===
+    # setup_fail2ban;
+    log "[DEBUG] Вызов setup_fail2ban пропущен для отладки." # <--- Добавим лог
+    debug_check_setup_conf "После ПРОПУСКА setup_fail2ban" # <--- ПРОВЕРКА 3 (изменена метка)
 
     setup_auto_updates;
     debug_check_setup_conf "После setup_auto_updates" # <--- ПРОВЕРКА 4
@@ -218,7 +220,6 @@ step7_start_service_and_extras() {
 
     log "Шаг 7 завершен."; update_state 99;
 }
-
 
 # ШАГ 99: Завершение
 step99_finish() {
