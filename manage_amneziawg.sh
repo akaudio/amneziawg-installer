@@ -23,7 +23,7 @@ SETUP_CONFIG_FILE="$AWG_DIR/setup.conf"; PYTHON_VENV_PATH="$AWG_DIR/venv/bin/pyt
 # --- Функции ---
 log_msg() { local type="$1"; local msg="$2"; local ts; ts=$(date +'%F %T'); local safe_msg; safe_msg=$(echo "$msg" | sed 's/%/%%/g'); local entry="[$ts] $type: $safe_msg"; local color_start=""; local color_end="\033[0m"; if [[ "$NO_COLOR" -eq 0 ]]; then case "$type" in INFO) color_start="\033[0;32m";; WARN) color_start="\033[0;33m";; ERROR) color_start="\033[1;31m";; DEBUG) color_start="\033[0;36m";; *) color_start=""; color_end="";; esac; fi; if ! mkdir -p "$(dirname "$LOG_FILE")" || ! echo "$entry" >> "$LOG_FILE"; then echo "[$ts] ERROR: Ошибка записи лога $LOG_FILE" >&2; fi; if [[ "$type" == "ERROR" ]]; then printf "${color_start}%s${color_end}\n" "$entry" >&2; else printf "${color_start}%s${color_end}\n" "$entry"; fi; }
 log() { log_msg "INFO" "$1"; }; log_warn() { log_msg "WARN" "$1"; }; log_error() { log_msg "ERROR" "$1"; }; log_debug() { log_msg "DEBUG" "$1"; }; die() { log_error "$1"; exit 1; }
-is_interactive() { [[ -t 0 && -t 1 ]]; } # Только для confirm_action
+is_interactive() { [[ -t 0 && -t 1 ]]; } # Используется только в confirm_action
 confirm_action() { if ! is_interactive; then return 0; fi; local action="$1"; local subject="$2"; read -p "Вы действительно хотите $action $subject? [y/N]: " confirm < /dev/tty; if [[ "$confirm" =~ ^[Yy]$ ]]; then return 0; else log "Действие отменено."; return 1; fi; }
 validate_client_name() { local name="$1"; if [[ -z "$name" ]]; then log_error "Имя пустое."; return 1; fi; if [[ ${#name} -gt 63 ]]; then log_error "Имя > 63 симв."; return 1; fi; if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then log_error "Имя содержит недоп. символы."; return 1; fi; return 0; }
 check_dependencies() { log "Проверка зависимостей..."; local ok=1; if [ ! -f "$SETUP_CONFIG_FILE" ]; then log_error " - $SETUP_CONFIG_FILE"; ok=0; fi; if [ ! -d "$AWG_DIR/venv" ]; then log_error " - $AWG_DIR/venv"; ok=0; fi; if [ ! -f "$AWGCFG_SCRIPT_PATH" ]; then log_error " - $AWGCFG_SCRIPT_PATH"; ok=0; fi; if [ ! -f "$SERVER_CONF_FILE" ]; then log_error " - $SERVER_CONF_FILE"; ok=0; fi; if [ "$ok" -eq 0 ]; then die "Не найдены файлы установки."; fi; if ! command -v awg &>/dev/null; then die "'awg' не найден."; fi; if [ ! -x "$AWGCFG_SCRIPT_PATH" ]; then die "$AWGCFG_SCRIPT_PATH не найден/не исполняемый."; fi; if [ ! -x "$PYTHON_VENV_PATH" ]; then die "$PYTHON_VENV_PATH не найден/не исполняемый."; fi; log "Зависимости OK."; }
@@ -41,24 +41,19 @@ list_clients() {
     if [ $verbose -eq 1 ]; then printf "%-20s | %-7s | %-7s | %-15s | %-15s | %s\n" "Имя клиента" "Conf" "QR" "IP-адрес" "Ключ (нач.)" "Статус"; printf -- "-%.0s" {1..85}; echo; else printf "%-20s | %-7s | %-7s | %s\n" "Имя клиента" "Conf" "QR" "Статус"; printf -- "-%.0s" {1..50}; echo; fi
     echo "$clients" | while IFS= read -r name; do
         name=$(echo "$name" | xargs); if [ -z "$name" ]; then continue; fi; ((tot++));
-        local cf="?"; local png="?"; local pk="-"; local ip="-"; local st="Нет данных"; local color_st="\033[0m"; # Без цвета по умолчанию
-        # Проверка наличия файлов
+        local cf="?"; local png="?"; local pk="-"; local ip="-"; local st="Нет данных"; local color_start="\033[0;37m"; local color_end="\033[0m"; if [[ "$NO_COLOR" -eq 1 ]]; then color_end=""; fi; # Отключаем сброс цвета, если надо
         [ -f "$AWG_DIR/${name}.conf" ] && cf="✓"; [ -f "$AWG_DIR/${name}.png" ] && png="✓";
         if [ "$cf" = "✓" ]; then
             ip=$(grep -oP 'Address = \K[0-9\.]+' "$AWG_DIR/${name}.conf" 2>/dev/null) || ip="?"
             local peer_block_started=0; local current_pk="";
-            # Ищем ключ пира в конфиге сервера
             while IFS= read -r line || [[ -n "$line" ]]; do if [[ "$line" != "#"* && "$line" != *"="* && -n "$line" && "$peer_block_started" -eq 1 && "$line" != "" ]]; then break; fi; if [[ "$line" == "[Peer]"* && "$peer_block_started" -eq 1 ]]; then break; fi; if [[ "$line" == *"#_Name = ${name}"* ]]; then peer_block_started=1; fi; if [[ "$peer_block_started" -eq 1 && "$line" == "PublicKey = "* ]]; then current_pk=$(echo "$line" | cut -d' ' -f3); break; fi; done < "$SERVER_CONF_FILE"
             if [[ -n "$current_pk" ]]; then
                 pk=$(echo "$current_pk" | head -c 10)"...";
-                # Проверяем статус в awg show
                 if echo "$awg_stat" | grep -qF "$current_pk"; then
                      local handshake_line; handshake_line=$(echo "$awg_stat" | grep -A 3 -F "$current_pk" | grep 'latest handshake:');
-                     if [[ -n "$handshake_line" && ! "$handshake_line" =~ "never" ]]; then
-                         if echo "$handshake_line" | grep -q "seconds ago"; then local sec; sec=$(echo "$handshake_line" | grep -oP '\d+(?= seconds ago)'); if [[ "$sec" -lt 180 ]]; then st="Активен"; color_st="\033[0;32m"; ((act++)); else st="Недавно"; color_st="\033[0;33m"; ((act++)); fi; else st="Недавно"; color_st="\033[0;33m"; ((act++)); fi
-                     else st="Нет handshake"; color_st="\033[0;37m"; fi
-                else st="Не найден"; color_st="\033[0;31m"; fi
-            else pk="?"; st="ошибка ключа"; color_st="\033[0;31m"; fi
+                     if [[ -n "$handshake_line" && ! "$handshake_line" =~ "never" ]]; then if echo "$handshake_line" | grep -q "seconds ago"; then local sec; sec=$(echo "$handshake_line" | grep -oP '\d+(?= seconds ago)'); if [[ "$sec" -lt 180 ]]; then st="Активен"; color_start="\033[0;32m"; ((act++)); else st="Недавно"; color_start="\033[0;33m"; ((act++)); fi; else st="Недавно"; color_start="\033[0;33m"; ((act++)); fi; else st="Нет handshake"; color_start="\033[0;37m"; fi
+                else st="Не найден"; color_start="\033[0;31m"; fi
+            else pk="?"; st="ошибка ключа"; color_start="\033[0;31m"; fi
         fi
         # Вывод строки
         if [ $verbose -eq 1 ]; then printf "%-20s | %-7s | %-7s | %-15s | %-15s | ${color_start}%s${color_end}\n" "$name" "$cf" "$png" "$ip" "$pk" "$st"; else printf "%-20s | %-7s | %-7s | ${color_start}%s${color_end}\n" "$name" "$cf" "$png" "$st"; fi
@@ -84,7 +79,7 @@ log "Запуск команды '$COMMAND'..."
 case $COMMAND in
     add)      [ -z "$CLIENT_NAME" ] && die "Не указ. имя."; validate_client_name "$CLIENT_NAME" || exit 1; if grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' уже есть."; fi; log "Добавление '$CLIENT_NAME'..."; if run_awgcfg -a "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' добавлен."; log "Генерация файлов..."; if run_awgcfg -c -q; then log "Файлы созданы/обновлены."; log "ВАЖНО: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка генерации файлов."; log_warn "Клиент добавлен, но файлы не акт-ны!"; fi; else log_error "Ошибка добавления клиента."; fi ;;
     remove)   [ -z "$CLIENT_NAME" ] && die "Не указ. имя."; if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; if ! confirm_action "удалить" "клиента '$CLIENT_NAME'"; then exit 1; fi; log "Удаление '$CLIENT_NAME'..."; if run_awgcfg -d "$CLIENT_NAME"; then log "Клиент '$CLIENT_NAME' удален."; log "Удаление файлов..."; rm -f "$AWG_DIR/$CLIENT_NAME.conf" "$AWG_DIR/$CLIENT_NAME.png"; log "Файлы удалены."; log "ВАЖНО: sudo systemctl restart awg-quick@awg0"; else log_error "Ошибка удаления."; fi ;;
-    list)     list_clients "${ARGS[0]}" ;; # Передаем первый оставшийся аргумент как возможный флаг -v
+    list)     list_clients "$CLIENT_NAME" ;; # $CLIENT_NAME содержит флаг -v, если он был
     regen)    log "Перегенерация файлов..."; if [ -n "$CLIENT_NAME" ]; then if ! grep -q "^#_Name = ${CLIENT_NAME}$" "$SERVER_CONF_FILE"; then die "Клиент '$CLIENT_NAME' не найден."; fi; log "Перегенерация ВСЕХ (включая '$CLIENT_NAME')..."; else log "Перегенерация ВСЕХ..."; fi; if run_awgcfg -c -q; then log "Файлы перегенерированы."; else log_error "Ошибка перегенерации."; fi ;;
     modify)   modify_client "$CLIENT_NAME" "$PARAM" "$VALUE" ;;
     backup)   backup_configs ;;
