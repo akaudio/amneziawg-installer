@@ -3,7 +3,7 @@
 # ==============================================================================
 # Скрипт для управления пользователями (пирами) AmneziaWG
 # Автор: @bivlked
-# Версия: 3.0 (Релиз)
+# Версия: 4.0 (Релиз)
 # Дата: 2025-04-18
 # Репозиторий: https://github.com/bivlked/amneziawg-installer
 # ==============================================================================
@@ -12,7 +12,7 @@
 set -o pipefail
 AWG_DIR="/root/awg"; SERVER_CONF_FILE="/etc/amnezia/amneziawg/awg0.conf";
 CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"; # ИСПОЛЬЗУЕМ НОВОЕ ИМЯ
-SETUP_CONFIG_FILE="$CONFIG_FILE" # Синоним для обратной совместимости в некоторых проверках
+SETUP_CONFIG_FILE="$CONFIG_FILE" # Используется для обратной совместимости в check_server
 PYTHON_VENV_PATH="$AWG_DIR/venv/bin/python"; AWGCFG_SCRIPT_PATH="$AWG_DIR/awgcfg.py"; LOG_FILE="$AWG_DIR/manage_amneziawg.log";
 NO_COLOR=0; VERBOSE_LIST=0;
 
@@ -25,7 +25,7 @@ CONFIG_FILE="$AWG_DIR/awgsetup_cfg.init"; SETUP_CONFIG_FILE="$CONFIG_FILE"; PYTH
 
 # --- Функции ---
 log_msg() { local type="$1"; local msg="$2"; local ts; ts=$(date +'%F %T'); local safe_msg; safe_msg=$(echo "$msg" | sed 's/%/%%/g'); local entry="[$ts] $type: $safe_msg"; local color_start=""; local color_end="\033[0m"; if [[ "$NO_COLOR" -eq 0 ]]; then case "$type" in INFO) color_start="\033[0;32m";; WARN) color_start="\033[0;33m";; ERROR) color_start="\033[1;31m";; DEBUG) color_start="\033[0;36m";; *) color_start=""; color_end="";; esac; fi; if ! mkdir -p "$(dirname "$LOG_FILE")" || ! echo "$entry" >> "$LOG_FILE"; then echo "[$ts] ERROR: Ошибка записи лога $LOG_FILE" >&2; fi; if [[ "$type" == "ERROR" ]]; then printf "${color_start}%s${color_end}\n" "$entry" >&2; else printf "${color_start}%s${color_end}\n" "$entry"; fi; }
-log() { log_msg "INFO" "$1"; }; log_warn() { log_msg "WARN" "$1"; }; log_error() { log_msg "ERROR" "$1"; }; log_debug() { if [[ "$VERBOSE_LIST" -eq 1 ]]; then log_msg "DEBUG" "$1"; fi; }; die() { log_error "$1"; exit 1; } # DEBUG выводим только если -v задан
+log() { log_msg "INFO" "$1"; }; log_warn() { log_msg "WARN" "$1"; }; log_error() { log_msg "ERROR" "$1"; }; log_debug() { if [[ "$VERBOSE_LIST" -eq 1 ]]; then log_msg "DEBUG" "$1"; fi; }; die() { log_error "$1"; exit 1; }
 is_interactive() { [[ -t 0 && -t 1 ]]; }
 confirm_action() { if ! is_interactive; then return 0; fi; local action="$1"; local subject="$2"; read -p "Вы действительно хотите $action $subject? [y/N]: " confirm < /dev/tty; if [[ "$confirm" =~ ^[Yy]$ ]]; then return 0; else log "Действие отменено."; return 1; fi; }
 validate_client_name() { local name="$1"; if [[ -z "$name" ]]; then log_error "Имя пустое."; return 1; fi; if [[ ${#name} -gt 63 ]]; then log_error "Имя > 63 симв."; return 1; fi; if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then log_error "Имя содержит недоп. символы."; return 1; fi; return 0; }
@@ -33,7 +33,7 @@ check_dependencies() { log "Проверка зависимостей..."; local
 run_awgcfg() { log_debug "Вызов run_awgcfg из $(pwd): $*"; if ! (cd "$AWG_DIR" && "$PYTHON_VENV_PATH" "$AWGCFG_SCRIPT_PATH" "$@"); then log_error "Ошибка выполнения awgcfg.py $*"; return 1; fi; log_debug "awgcfg.py $* выполнен успешно."; return 0; }
 # Workaround для awgcfg.py -c -q
 run_awgcfg_generate_clients() {
-    local temp_conf_path="/root/${CONFIG_FILE##*/}.tmp" # Используем новое имя файла
+    local temp_conf_path="/root/${CONFIG_FILE##*/}.tmp"
     log_debug "Workaround: Перемещаем $CONFIG_FILE в $temp_conf_path...";
     if [ -f "$CONFIG_FILE" ]; then mv "$CONFIG_FILE" "$temp_conf_path" || log_warn "Workaround: Не удалось переместить $CONFIG_FILE"; else log_warn "Workaround: $CONFIG_FILE не найден перед перемещением!"; fi
     # Запускаем генерацию
@@ -50,9 +50,10 @@ run_awgcfg_generate_clients() {
     elif [ ! -f "$CONFIG_FILE" ]; then
          log_error "Workaround: $CONFIG_FILE отсутствует и не может быть восстановлен!";
     fi
+    # Удаляем временный файл, если он остался
+    rm -f "$temp_conf_path"
     # Проверяем еще раз после возврата
     if [ ! -f "$CONFIG_FILE" ]; then log_error "Файл $CONFIG_FILE все еще отсутствует после попытки возврата!"; fi
-    # Возвращаем код ошибки, если был
     return $result
 }
 backup_configs() { log "Создание бэкапа..."; local bd="$AWG_DIR/backups"; mkdir -p "$bd" || die "Ошибка mkdir $bd"; local ts; ts=$(date +%F_%T); local bf="$bd/awg_backup_${ts}.tar.gz"; local td; td=$(mktemp -d); mkdir -p "$td/server" "$td/clients"; cp -a "$SERVER_CONF_FILE"* "$td/server/" 2>/dev/null; cp -a "$AWG_DIR"/*.conf "$AWG_DIR"/*.png "$CONFIG_FILE" "$td/clients/" 2>/dev/null||true; tar -czf "$bf" -C "$td" . || { rm -rf "$td"; die "Ошибка tar $bf"; }; rm -rf "$td"; chmod 600 "$bf" || log_warn "Ошибка chmod бэкапа"; find "$bd" -maxdepth 1 -name "awg_backup_*.tar.gz" -printf '%T@ %p\n'|sort -nr|tail -n +11|cut -d' ' -f2-|xargs -r rm -f || log_warn "Ошибка удаления старых бэкапов"; log "Бэкап создан: $bf"; }
@@ -62,7 +63,7 @@ check_server() { log "Проверка состояния сервера Amnezia
 list_clients() {
     log "Получение списка клиентов..."; local clients; clients=$(grep '^#_Name = ' "$SERVER_CONF_FILE" | sed 's/^#_Name = //' | sort) || clients="";
     if [ -z "$clients" ]; then log "Клиенты не найдены."; return 0; fi
-    local verbose=$VERBOSE_LIST # Используем флаг -v, установленный при запуске
+    local verbose=$VERBOSE_LIST
     local awg_stat; awg_stat=$(awg show 2>/dev/null) || awg_stat=""; local act=0; local tot=0;
     if [ $verbose -eq 1 ]; then printf "%-20s | %-7s | %-7s | %-15s | %-15s | %s\n" "Имя клиента" "Conf" "QR" "IP-адрес" "Ключ (нач.)" "Статус"; printf -- "-%.0s" {1..85}; echo; else printf "%-20s | %-7s | %-7s | %s\n" "Имя клиента" "Conf" "QR" "Статус"; printf -- "-%.0s" {1..50}; echo; fi
     echo "$clients" | while IFS= read -r name; do
