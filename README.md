@@ -1,7 +1,7 @@
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-orange)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE)
 ![Status](https://img.shields.io/badge/Status-Active-success)
-[![Version](https://img.shields.io/badge/Installer_Version-3.0-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
+[![Version](https://img.shields.io/badge/Installer_Version-4.0-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
 
 <h1 align="center">Автоматическая установка и управление AmneziaWG</h1>
 
