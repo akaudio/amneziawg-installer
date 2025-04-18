@@ -76,7 +76,7 @@
 
 2.  **Скачайте скрипт:**
     ```bash
-    wget [https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh](https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh)
+    wget https://raw.githubusercontent.com/bivlked/amneziawg-installer/main/install_amneziawg.sh
     ```
 3.  **Сделайте его исполняемым:**
     ```bash
