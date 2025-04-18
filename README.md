@@ -1,12 +1,8 @@
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-orange)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/bivlked/amneziawg-installer/blob/main/LICENSE)
 ![Status](https://img.shields.io/badge/Status-Stable-success)
-[![Version](https://img.shields.io/badge/Installer_Version-4.0-blue)](https://github.com/bivlked/amneziawg-installer/releases)
-
-<p align="center">
-  <img src="https://www.bondarev.net/awg_logo.jpg" alt="AmneziaWG Installer Logo" width="250">
-</p>
-
+[![Version](https://img.shields.io/badge/Installer_Version-4.0-blue)](https://github.com/bivlked/amneziawg-installer/releases) 
+ 
 <h1 align="center">Автоматическая установка и управление AmneziaWG</h1>
 
 <p align="center">
@@ -17,7 +13,8 @@
 <p align="center">
   <a href="#vozmozhnosti">Возможности</a> •
   <a href="#trebovaniya">Требования</a> •
-  Хостинг • 12345   <a href="#ustanovka">Установка</a> •
+  <a href="#recomend-hosting">Хостинг</a> •
+  <a href="#ustanovka">Установка</a> •
   <a href="#upravlenie">Управление</a> •
   <a href="#dopolnitelno">Дополнительно</a> •
   <a href="#faq-main">FAQ</a> •
@@ -89,7 +86,7 @@
     ```bash
     sudo bash ./install_amneziawg.sh
     ```
-    *(Вы также можете передать параметры командной строки, см. `sudo bash ./install_amneziawg.sh --help` или [ADVANCED.md#cli-params](ADVANCED.md#cli-params))*
+    *(Вы также можете передать параметры командной строки, см. `sudo bash ./install_amneziawg.sh --help` или [ADVANCED.md#cli-params-adv](ADVANCED.md#cli-params-adv))*
 
 5.  **Начальная настройка:** Скрипт интерактивно запросит:
     * **UDP порт:** Порт для подключения клиентов (1024-65535). По умолчанию: `39743`.
@@ -129,7 +126,7 @@
 sudo bash /root/awg/manage_amneziawg.sh <команда> [аргументы]
 ```
 
-**Основные команды:** (Полный список см. `... help` или [ADVANCED.md#manage-commands](ADVANCED.md#manage-commands))
+**Основные команды:** (Полный список см. `... help` или [ADVANCED.md#manage-commands-adv](ADVANCED.md#manage-commands-adv))
 
 | Команда   | Аргументы         | Описание                     | Перезапуск? |
 | :-------- | :---------------- | :--------------------------- | :-----------: |
@@ -186,7 +183,7 @@ sudo bash /root/awg/manage_amneziawg.sh <команда> [аргументы]
 
 ---
 
-<a id="лицензия"></a>
+<a id="licenziya"></a>
 ## 📝 Лицензия и Автор
 
 * **Автор скриптов:** @bivlked - [GitHub](https://github.com/bivlked)
