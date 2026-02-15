@@ -59,8 +59,8 @@ H4 = <H4>
 #_Name = <CLIENT_NAME>
 #_AllowedIPs = <CLIENT_TUNNEL_IP>
 
-PostUp = iptables -A FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
-PostDown = iptables -D FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
+PostUp = iptables -A FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
+PostDown = iptables -D FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
 """
 
 g_defclient_config = """
