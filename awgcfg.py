@@ -1,44 +1,46 @@
 # SPDX-License-Identifier: MIT
 # Author: remittor <remittor@gmail.com>
 # Created: 2024
-# PATCHED by: akaudio
-# Patches applied:
-#   1. Fixed obfuscation parameter mismatch (clients now use server params for Jc/Jmin/Jmax)
-#   2. Using secrets module for crypto-safe PRNG
-#   3. Added client name validation
-#   4. Fixed logic: handle --make before reading config
-#   5. Auto-extract tun name from config path if not provided
+#
+# Security patched + AWG consistency patched:
+#   - exec_cmd: no shell=True, commands are lists
+#   - secrets instead of random for obfuscation params
+#   - client name validation (prevents injection/path tricks)
+#   - safe filename for generated client configs
+#   - AWG: clients use server Jc/Jmin/Jmax (must match server)
+#   - do not hardcode awg0.conf when cleaning/generated files
+#   - g_main_config_src anchored to script directory
 
 import os
 import sys
 import glob
 import subprocess
 import optparse
-import random
 import datetime
 import secrets
 import re
 
-g_main_config_src = '.main.config'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+g_main_config_src = os.path.join(SCRIPT_DIR, '.main.config')
 g_main_config_fn = None
 g_main_config_type = None
 
 g_defclient_config_fn = "_defclient.config"
 
 parser = optparse.OptionParser("usage: %prog [options]")
-parser.add_option("-t", "--tmpcfg", dest="tmpcfg", default = g_defclient_config_fn)
-parser.add_option("-c", "--conf", dest="confgen", action="store_true", default = False)
-parser.add_option("-q", "--qrcode", dest="qrcode", action="store_true", default = False)
-parser.add_option("-a", "--add", dest="addcl", default = "")
-parser.add_option("-u", "--update", dest="update", default = "")
-parser.add_option("-d", "--delete", dest="delete", default = "")
-parser.add_option("-i", "--ipaddr", dest="ipaddr", default = "")
-parser.add_option("-p", "--port", dest="port", default = None, type = 'int')
-parser.add_option("", "--make", dest="makecfg", default = "")
-parser.add_option("", "--tun", dest="tun", default = "")
-parser.add_option("", "--create", dest="create", action="store_true", default = False)
+parser.add_option("-t", "--tmpcfg", dest="tmpcfg", default=g_defclient_config_fn)
+parser.add_option("-c", "--conf", dest="confgen", action="store_true", default=False)
+parser.add_option("-q", "--qrcode", dest="qrcode", action="store_true", default=False)
+parser.add_option("-a", "--add", dest="addcl", default="")
+parser.add_option("-u", "--update", dest="update", default="")
+parser.add_option("-d", "--delete", dest="delete", default="")
+parser.add_option("-i", "--ipaddr", dest="ipaddr", default="")
+parser.add_option("-p", "--port", dest="port", default=None, type='int')
+parser.add_option("", "--make", dest="makecfg", default="")
+parser.add_option("", "--tun", dest="tun", default="")
+parser.add_option("", "--create", dest="create", action="store_true", default=False)
 (opt, args) = parser.parse_args()
-
 
 g_defserver_config = """
 [Interface]
@@ -57,21 +59,17 @@ H2 = <H2>
 H3 = <H3>
 H4 = <H4>
 
-#_Peer = <CLIENT_PUBLIC_KEY>
-#_Name = <CLIENT_NAME>
-#_AllowedIPs = <CLIENT_TUNNEL_IP>
+PostUp = iptables -A INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
 
-PostUp = iptables -A FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
-PostDown = iptables -D FORWARD -i <INTERFACE> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <ADAPTER> -j MASQUERADE --wait 10 --wait-interval 50
+PostDown = iptables -D INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
 """
 
 g_defclient_config = """
 [Interface]
-#_GenKeyTime = <CLIENT_KEY_TIME>
 PrivateKey = <CLIENT_PRIVATE_KEY>
 #_PublicKey = <CLIENT_PUBLIC_KEY>
 Address = <CLIENT_TUNNEL_IP>
-DNS = 1.1.1.1
+DNS = 8.8.8.8
 Jc = <JC>
 Jmin = <JMIN>
 Jmax = <JMAX>
@@ -83,261 +81,448 @@ H3 = <H3>
 H4 = <H4>
 
 [Peer]
-PublicKey = <SERVER_PUBLIC_KEY>
-PresharedKey = <PRESHARED_KEY>
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 8.8.8.8/32
 Endpoint = <SERVER_ADDR>:<SERVER_PORT>
-PersistentKeepalive = 25
+PersistentKeepalive = 60
+PublicKey = <SERVER_PUBLIC_KEY>
 """
 
+CLIENT_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,63}$')
 
-class IPAddr:
-    def __init__(self, addr):
-        if '/' in addr:
-            ar = addr.split('/')
-            self.ip = ar[0].strip()
-            self.mask = ar[1].strip()
-        else:
-            self.ip = addr.strip()
-            self.mask = None
-        parts = self.ip.split('.')
-        if len(parts) != 4:
-            raise RuntimeError(f'ERROR: invalid ip address: "{addr}"')
-        self.parts = [ int(x) for x in parts ]
-        for x in self.parts:
-            if x > 255 or x < 0:
-                raise RuntimeError(f'ERROR: invalid ip address: "{addr}"')
-        
-    def __str__(self):
-        return '.'.join([ str(x) for x in self.parts ])
+def validate_client_name(name: str):
+    if not name:
+        raise RuntimeError('ERROR: Empty client name')
+    if not CLIENT_NAME_RE.match(name):
+        raise RuntimeError('ERROR: Invalid client name. Use only: a-z A-Z 0-9 _ - (1..63)')
+    return name
 
-    def calc_next(self):
-        for i in range(len(self.parts) - 1, -1, -1):
-            self.parts[i] += 1
-            if self.parts[i] > 255:
-                self.parts[i] = 0
-                continue
-            break
+def safe_filename(stem: str, fallback: str = "peer") -> str:
+    # Make a safe file stem for Linux/Windows; do not allow paths
+    stem = stem.strip()
+    stem = stem.replace('\\', '_').replace('/', '_')
+    stem = re.sub(r'[^a-zA-Z0-9_-]+', '_', stem)
+    stem = stem.strip('_')
+    if not stem:
+        stem = fallback
+    return stem[:63]
 
+def exec_cmd(cmd, input=None, timeout=None):
+    # cmd must be a list[str]
+    proc = subprocess.run(
+        cmd,
+        input=input,
+        shell=False,
+        check=False,
+        timeout=timeout,
+        encoding='utf8',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+    return proc.returncode, proc.stdout
 
-class ObjStorage:
-    pass
+def get_main_iface():
+    rc, out = exec_cmd(['ip', 'link', 'show'])
+    if rc:
+        raise RuntimeError('ERROR: Cannot get net interfaces')
 
-
-def exec_cmd(cmd):
-    try:
-        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
-    except subprocess.CalledProcessError as e:
-        return e.returncode, e.output.decode('utf-8')
-    return 0, output
-
+    for line in out.split('\n'):
+        # typical: "2: ens3: <BROADCAST,...> ... state UP ..."
+        if '<BROADCAST' in line and ('state UP' in line or ',UP,' in line or '<BROADCAST' in line):
+            xv = line.split(':', 2)
+            if len(xv) >= 2:
+                return xv[1].strip()
+    return None
 
 def get_ext_ipaddr():
-    rc, out = exec_cmd('curl -4 -s icanhazip.com')
-    if rc != 0:
-        raise RuntimeError(f'ERROR: Cannot get external IP address!')
-    out = out.strip()
-    if not out:
-        raise RuntimeError(f'ERROR: Cannot get external IP address!')
-    return out
+    rc, out = exec_cmd(['curl', '-4', '-s', 'icanhazip.com'])
+    if rc:
+        raise RuntimeError('ERROR: Cannot get ext IP-Addr')
+    ip = out.strip().splitlines()[-1].strip()
+    ipaddr = IPAddr(ip)
+    return str(ipaddr)
 
+def gen_pair_keys(cfg_type=None):
+    global g_main_config_type
 
-def get_wgtool_list():
-    lst = []
-    for x in [ 'awg', 'wg' ]:
-        rc, out = exec_cmd(f'which {x}')
-        if rc == 0:
-            lst.append(x)
-    return lst
+    if sys.platform == 'win32':
+        return 'client_priv_key', 'client_pub_key'
 
-wgtool_list = get_wgtool_list()
+    if not cfg_type:
+        cfg_type = g_main_config_type
+    if not cfg_type:
+        raise RuntimeError('ERROR: Cannot detect cfg_type')
 
-if not wgtool_list:
-    raise RuntimeError(f'ERROR: wg or awg not found!')
+    wgtool = cfg_type.lower()  # "wg" or "awg"
 
-print(f'Available WireGuard tools: {", ".join(wgtool_list)}')
-
-
-def genkey(wgtool = 'awg'):
-    rc, out = exec_cmd(f'{wgtool} genkey')
-    if rc != 0:
-        raise RuntimeError(f'ERROR: Cannot generate private Key')
+    rc, out = exec_cmd([wgtool, 'genkey'])
+    if rc:
+        raise RuntimeError('ERROR: Cannot generate private key')
     priv_key = out.strip()
     if not priv_key:
-        raise RuntimeError(f'ERROR: Cannot generate private Key')
+        raise RuntimeError('ERROR: Cannot generate private Key')
 
-    rc, out = exec_cmd(f'echo "{priv_key}" | {wgtool} pubkey')
-    if rc != 0:
-        raise RuntimeError(f'ERROR: Cannot generate public Key')
+    rc, out = exec_cmd([wgtool, 'pubkey'], input=priv_key + '\n')
+    if rc:
+        raise RuntimeError('ERROR: Cannot generate public key')
     pub_key = out.strip()
     if not pub_key:
-        raise RuntimeError(f'ERROR: Cannot generate public Key')
-    
+        raise RuntimeError('ERROR: Cannot generate public Key')
+
     return priv_key, pub_key
 
-
-def genpsk(wgtool = 'awg'):
-    rc, out = exec_cmd(f'{wgtool} genpsk')
-    if rc != 0:
-        raise RuntimeError(f'ERROR: Cannot generate preshared Key')
-    psk_key = out.strip()
-    if not psk_key:
-        raise RuntimeError(f'ERROR: Cannot generate preshared Key')    
-    return psk_key
-
-
-def get_main_config_path(check = False):
+def get_main_config_path(check=True):
     global g_main_config_fn
     global g_main_config_type
-    if os.path.exists(g_main_config_src):
-        with open(g_main_config_src, 'r') as file:
-            g_main_config_fn = file.read().strip()
-    else:
-        g_main_config_fn = None
-        if check:
-            raise RuntimeError(f'ERROR: Main config file not found!')
-        return
-    if not os.path.exists(g_main_config_fn):
-        raise RuntimeError(f'ERROR: Main config file "{g_main_config_fn}" not found!')
-    basename = os.path.basename(g_main_config_fn)
-    if basename.startswith('awg'):
+
+    if not os.path.exists(g_main_config_src):
+        raise RuntimeError(f'ERROR: file "{g_main_config_src}" not found!')
+
+    with open(g_main_config_src, 'r', encoding='utf8') as file:
+        lines = file.readlines()
+
+    if not lines:
+        raise RuntimeError(f'ERROR: file "{g_main_config_src}" is empty!')
+
+    g_main_config_fn = lines[0].strip()
+    if not g_main_config_fn:
+        raise RuntimeError(f'ERROR: file "{g_main_config_src}" has empty path!')
+
+    cfg_exists = os.path.exists(g_main_config_fn)
+    g_main_config_type = 'WG'
+    if os.path.basename(g_main_config_fn).startswith('a'):
         g_main_config_type = 'AWG'
-    elif basename.startswith('wg'):
-        g_main_config_type = 'WG'
-    else:
-        g_main_config_type = None
 
+    if check and not cfg_exists:
+        raise RuntimeError(f'ERROR: Main {g_main_config_type} config file "{g_main_config_fn}" not found!')
 
-def create_server_config(ipaddr, tun, port, ext_ipaddr):
-    global g_main_config_fn
-    global g_main_config_type
-    if g_main_config_fn:
-        raise RuntimeError(f'ERROR: Main config file "{g_main_config_fn}" already exists!')
-    
-    ipaddr = IPAddr(ipaddr)
+    return g_main_config_fn
+
+class IPAddr:
+    def __init__(self, ipaddr=None):
+        self.ip = [0, 0, 0, 0]
+        self.mask = None
+        if ipaddr:
+            self.init(ipaddr)
+
+    def init(self, ipaddr):
+        _ipaddr = ipaddr
+        if not ipaddr:
+            raise RuntimeError(f'ERROR: Incorrect IP-Addr: "{_ipaddr}"')
+        if ' ' in ipaddr or ',' in ipaddr:
+            raise RuntimeError(f'ERROR: Incorrect IP-Addr: "{_ipaddr}"')
+        self.ip = [0, 0, 0, 0]
+        self.mask = None
+        if '/' in ipaddr:
+            self.mask = int(ipaddr.split('/')[1])
+            ipaddr = ipaddr.split('/')[0]
+        nlist = ipaddr.split('.')
+        if len(nlist) != 4:
+            raise RuntimeError(f'ERROR: Incorrect IP-addr: "{_ipaddr}"')
+        for n, num in enumerate(nlist):
+            self.ip[n] = int(num)
+
+    def __str__(self):
+        out = f'{self.ip[0]}.{self.ip[1]}.{self.ip[2]}.{self.ip[3]}'
+        if self.mask:
+            out += '/' + str(self.mask)
+        return out
+
+class WGConfig:
+    def __init__(self, filename=None):
+        self.lines = []
+        self.iface = {}
+        self.peer = {}
+        self.idsline = {}
+        self.cfg_fn = None
+        if filename:
+            self.load(filename)
+
+    def load(self, filename):
+        self.cfg_fn = None
+        self.lines = []
+        self.iface = {}
+        self.peer = {}
+        self.idsline = {}
+
+        with open(filename, 'r', encoding='utf8') as file:
+            lines = file.readlines()
+
+        iface = None
+        secdata = []
+        secdata_item = None
+        secline = []
+        secline_item = None
+
+        for n, line in enumerate(lines):
+            line = line.rstrip()
+            self.lines.append(line)
+
+            if line.strip() == '':
+                continue
+
+            if line.startswith(' ') and not line.strip().startswith('#'):
+                raise RuntimeError(f'ERROR_CFG: Incorrect line #{n} into config "{filename}"')
+
+            if line.startswith('#') and not line.startswith('#_'):
+                continue
+
+            if line.startswith('[') and line.endswith(']'):
+                section_name = line[1:-1]
+                if not section_name:
+                    raise RuntimeError(f'ERROR_CFG: Incorrect section name: "{section_name}" (#{n+1})')
+                secdata_item = {"_section_name": section_name.lower()}
+                secline_item = {"_section_name": n}
+                if section_name.lower() == 'interface':
+                    if iface:
+                        raise RuntimeError(f'ERROR_CFG: Found second section Interface in line #{n+1}')
+                    iface = secdata_item
+                elif section_name.lower() == 'peer':
+                    pass
+                else:
+                    raise RuntimeError(f'ERROR_CFG: Found incorrect section "{section_name}" in line #{n+1}')
+                secdata.append(secdata_item)
+                secline.append(secline_item)
+                continue
+
+            if line.startswith('#_') and ' = ' in line:
+                line = line[2:]
+
+            if line.startswith('#'):
+                continue
+
+            if ' = ' not in line:
+                raise RuntimeError(f'ERROR_CFG: Incorrect line into config: "{line}"  (#{n+1})')
+
+            xv = line.find(' = ')
+            if xv <= 0:
+                raise RuntimeError(f'ERROR_CFG: Incorrect line into config: "{line}"  (#{n+1})')
+
+            vname = line[:xv].strip()
+            value = line[xv + 3:].strip()
+
+            if not secdata_item:
+                raise RuntimeError(f'ERROR_CFG: Parameter "{vname}" have unknown section! (#{n+1})')
+
+            section_name = secdata_item['_section_name']
+            if vname in secdata_item:
+                raise RuntimeError(f'ERROR_CFG: Found duplicate of param "{vname}" into section "{section_name}" (#{n+1})')
+
+            secdata_item[vname] = value
+            secline_item[vname] = n
+
+        if not iface:
+            raise RuntimeError('ERROR_CFG: Cannot found section Interface!')
+
+        for i, item in enumerate(secdata):
+            line = secline[i]
+            peer_name = ""
+            if item['_section_name'] == 'interface':
+                self.iface = item
+                peer_name = "__this_server__"
+                if 'PublicKey' not in item:
+                    raise RuntimeError('ERROR_CFG: Cannot found PublicKey in Interface')
+                if 'PrivateKey' not in item:
+                    raise RuntimeError('ERROR_CFG: Cannot found PrivateKey in Interface')
+            else:
+                if 'Name' in item:
+                    peer_name = item['Name']
+                    if not peer_name:
+                        raise RuntimeError(f'ERROR_CFG: Invalid peer Name in line #{line["Name"]}')
+                elif 'PublicKey' in item:
+                    peer_name = item['PublicKey']
+                    if not peer_name:
+                        raise RuntimeError(f'ERROR_CFG: Invalid peer PublicKey in line #{line["PublicKey"]}')
+                else:
+                    raise RuntimeError(f'ERROR_CFG: Invalid peer data in line #{line["_section_name"]}')
+
+                if 'AllowedIPs' not in item:
+                    raise RuntimeError(f'ERROR_CFG: Cannot found "AllowedIPs" into peer "{peer_name}"')
+
+                if peer_name in self.peer:
+                    raise RuntimeError(f'ERROR_CFG: Found duplicate peer with name "{peer_name}"')
+
+                self.peer[peer_name] = item
+
+            if peer_name in self.idsline:
+                raise RuntimeError(f'ERROR_CFG: Found duplicate peer with name "{peer_name}"')
+
+            min_line = line['_section_name']
+            max_line = min_line
+            self.idsline[f'{peer_name}'] = min_line
+            for vname in item:
+                self.idsline[f'{peer_name}|{vname}'] = line[vname]
+                if line[vname] > max_line:
+                    max_line = line[vname]
+
+            item['_lines_range'] = (min_line, max_line)
+
+        self.cfg_fn = filename
+        return len(self.peer)
+
+    def save(self, filename=None):
+        if not filename:
+            filename = self.cfg_fn
+        if not self.lines:
+            raise RuntimeError('ERROR: no data')
+        with open(filename, 'w', newline='\n', encoding='utf8') as file:
+            for line in self.lines:
+                file.write(line + '\n')
+
+    def del_client(self, c_name):
+        if c_name not in self.peer:
+            raise RuntimeError(f'ERROR: Not found client "{c_name}" in peer list!')
+
+        client = self.peer[c_name]
+        ipaddr = client['AllowedIPs']
+        min_line, max_line = client['_lines_range']
+        del self.lines[min_line:max_line + 1]
+        del self.peer[c_name]
+        secsize = max_line - min_line + 1
+        del_list = []
+        for k, v in self.idsline.items():
+            if v >= min_line and v <= max_line:
+                del_list.append(k)
+            elif v > max_line:
+                self.idsline[k] = v - secsize
+        for k in del_list:
+            del self.idsline[k]
+        return ipaddr
+
+    def set_param(self, c_name, param_name, param_value, force=False, offset=0):
+        if c_name not in self.peer:
+            raise RuntimeError(f'ERROR: Not found client "{c_name}" in peer list!')
+
+        line_prefix = ""
+        if param_name.startswith('_'):
+            line_prefix = "#_"
+            param_name = param_name[1:]
+
+        client = self.peer[c_name]
+        min_line, max_line = client['_lines_range']
+        if param_name in client:
+            nline = self.idsline[f'{c_name}|{param_name}']
+            line = self.lines[nline]
+            if line.startswith('#_'):
+                line_prefix = "#_"
+            self.lines[nline] = f'{line_prefix}{param_name} = {param_value}'
+            return
+
+        if not force:
+            raise RuntimeError(f'ERROR: Param "{param_name}" not found for client "{c_name}"')
+
+        new_line = f'{line_prefix}{param_name} = {param_value}'
+        client[param_name] = param_value
+        secsize = max_line - min_line + 1
+        if offset >= secsize:
+            raise RuntimeError(f'ERROR: Incorrect offset value = {offset} (secsize = {secsize})')
+
+        pos = max_line + 1 if offset <= 0 else min_line + offset
+        for k, v in list(self.idsline.items()):
+            if v >= pos:
+                self.idsline[k] = v + 1
+
+        self.idsline[f'{c_name}|{param_name}'] = pos
+        self.lines.insert(pos, new_line)
+        return
+
+# -------------------------------------------------------------------------------------
+
+if opt.makecfg:
+    g_main_config_fn = opt.makecfg
+    if os.path.exists(g_main_config_fn):
+        raise RuntimeError(f'ERROR: file "{g_main_config_fn}" already exists!')
+
+    m_cfg_type = 'WG'
+    if os.path.basename(g_main_config_fn).startswith('a'):
+        m_cfg_type = 'AWG'
+
+    print(f'Make {m_cfg_type} server config: "{g_main_config_fn}"...')
+    main_iface = get_main_iface()
+    if not main_iface:
+        raise RuntimeError('ERROR: Cannot get main network interface!')
+
+    print(f'Main network iface: "{main_iface}"')
+
+    if opt.port is None or opt.port <= 1000 or opt.port > 65530:
+        raise RuntimeError(f'ERROR: Incorrect argument port = {opt.port}')
+
+    if not opt.ipaddr:
+        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
+
+    ipaddr = IPAddr(opt.ipaddr)
     if not ipaddr.mask:
         raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    
-    if not tun:
-        raise RuntimeError(f'ERROR: Incorrect argument tun = "{opt.tun}"')
-    
-    if not port:
-        raise RuntimeError(f'ERROR: Incorrect argument port = "{opt.port}"')
 
-    m_tun = tun
-    m_ipaddr = ipaddr
-    m_cfg_type = None
-    
-    for wgtool in wgtool_list:
-        priv_key, pub_key = genkey(wgtool)
-        if not priv_key or not pub_key:
-            continue
-        is_long_key = len(priv_key) == 44
-        if is_long_key != (wgtool == 'awg'):
-            continue
-        print(f'Key length: {len(priv_key)}')
-        if is_long_key:
-            m_cfg_type = 'AWG'
-            g_main_config_fn = f'{wgtool}{m_tun}.conf'
-        else:
-            m_cfg_type = 'WG'
-            g_main_config_fn = f'{wgtool}{m_tun}.conf'            
-        break
-    
-    if not m_cfg_type:
-        raise RuntimeError(f'ERROR: Cannot detect config type!')
-    
-    g_main_config_type = m_cfg_type
-    
-    print(f'Generate server config "{g_main_config_fn}"')
-    print(f'Config type: {m_cfg_type}')
-    print(f'PrivateKey: {priv_key}')
-    print(f'PublicKey: {pub_key}')
+    if opt.tun:
+        tun_name = opt.tun.strip()
+    else:
+        cfg_name = os.path.basename(g_main_config_fn)
+        tun_name = os.path.splitext(cfg_name)[0].strip()
 
-    jc = secrets.randbelow(125) + 3
-    jmin = secrets.randbelow(698) + 3
-    jmax = secrets.randbelow(1270 - jmin - 1) + jmin + 1
+    if not tun_name or ' ' in tun_name or '/' in tun_name or '\\' in tun_name:
+        raise RuntimeError(f'ERROR: Incorrect tun name: "{tun_name}"')
+
+    print(f'Tunnel iface: "{tun_name}"')
+
+    priv_key, pub_key = gen_pair_keys(m_cfg_type)
+
+    jc = secrets.randbelow(127 - 3 + 1) + 3
+    jmin = secrets.randbelow(700 - 3 + 1) + 3
+    jmax = secrets.randbelow(1270 - (jmin + 1) + 1) + (jmin + 1)
 
     out = g_defserver_config
+    out = out.replace('<SERVER_KEY_TIME>', datetime.datetime.now().isoformat())
     out = out.replace('<SERVER_PRIVATE_KEY>', priv_key)
     out = out.replace('<SERVER_PUBLIC_KEY>', pub_key)
-    out = out.replace('<SERVER_KEY_TIME>', datetime.datetime.now().isoformat())
-    out = out.replace('<SERVER_ADDR>', str(m_ipaddr))
-    out = out.replace('<SERVER_PORT>', str(port))
-    out = out.replace('<INTERFACE>', m_tun)
-    out = out.replace('<ADAPTER>', 'ens6')
-    out = out.replace('<JC>', str(jc))
-    out = out.replace('<JMIN>', str(jmin))
-    out = out.replace('<JMAX>', str(jmax))
-    if m_cfg_type != 'AWG':
-        out = out.replace('\nJc = <'  , '\n# ')
-        out = out.replace('\nJmin = <', '\n# ')
-        out = out.replace('\nJmax = <', '\n# ')
-        out = out.replace('\nS1 = <'  , '\n# ')
-        out = out.replace('\nS2 = <'  , '\n# ')
-        out = out.replace('\nH1 = <'  , '\n# ')
-        out = out.replace('\nH2 = <'  , '\n# ')
-        out = out.replace('\nH3 = <'  , '\n# ')
-        out = out.replace('\nH4 = <'  , '\n# ')
-    else:
-        out = out.replace('<S1>', str(secrets.randbelow(125) + 3))
-        out = out.replace('<S2>', str(secrets.randbelow(125) + 3))
+    out = out.replace('<SERVER_ADDR>', str(ipaddr))
+    out = out.replace('<SERVER_PORT>', str(opt.port))
+
+    if m_cfg_type == 'AWG':
+        out = out.replace('<JC>', str(jc))
+        out = out.replace('<JMIN>', str(jmin))
+        out = out.replace('<JMAX>', str(jmax))
+        out = out.replace('<S1>', str(secrets.randbelow(127 - 3 + 1) + 3))
+        out = out.replace('<S2>', str(secrets.randbelow(127 - 3 + 1) + 3))
         out = out.replace('<H1>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
         out = out.replace('<H2>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
         out = out.replace('<H3>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
         out = out.replace('<H4>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
-        
-    with open(g_main_config_fn, 'w', newline = '\n') as file:
+    else:
+        out = out.replace('\nJc = <', '\n# ')
+        out = out.replace('\nJmin = <', '\n# ')
+        out = out.replace('\nJmax = <', '\n# ')
+        out = out.replace('\nS1 = <', '\n# ')
+        out = out.replace('\nS2 = <', '\n# ')
+        out = out.replace('\nH1 = <', '\n# ')
+        out = out.replace('\nH2 = <', '\n# ')
+        out = out.replace('\nH3 = <', '\n# ')
+        out = out.replace('\nH4 = <', '\n# ')
+
+    out = out.replace('<SERVER_IFACE>', main_iface)
+    out = out.replace('<SERVER_TUN>', tun_name)
+
+    with open(g_main_config_fn, 'w', newline='\n', encoding='utf8') as file:
         file.write(out)
-    
+
     print(f'{m_cfg_type} server config file "{g_main_config_fn}" created!')
-    
-    with open(g_main_config_src, 'w', newline = '\n') as file:
+
+    with open(g_main_config_src, 'w', newline='\n', encoding='utf8') as file:
         file.write(g_main_config_fn)
-    
+
     sys.exit(0)
 
 # -------------------------------------------------------------------------------------
 
-# CRITICAL FIX: Handle --make BEFORE reading config
-if opt.makecfg:
-    print(f'Make config "{opt.makecfg}"...')
-    
-    if not opt.ipaddr:
-        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    ipaddr = IPAddr(opt.ipaddr)
-    if not ipaddr.mask:
-        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    
-    # FIX: Extract tun from config path if not provided
-    if not opt.tun:
-        # /etc/amnezia/amneziawg/awg0.conf -> awg0.conf -> awg0
-        config_basename = os.path.basename(opt.makecfg)
-        tun_name = config_basename.replace('.conf', '')
-        # awg0 -> 0
-        if tun_name.startswith('awg'):
-            opt.tun = tun_name[3:]  # Extract "0" from "awg0"
-        elif tun_name.startswith('wg'):
-            opt.tun = tun_name[2:]  # Extract "0" from "wg0"
-        else:
-            raise RuntimeError(f'ERROR: Cannot extract tun from config path: {opt.makecfg}')
-        print(f'Auto-detected tun interface: {tun_name} (tun={opt.tun})')
-    
-    if not opt.port:
-        raise RuntimeError(f'ERROR: Incorrect argument port = "{opt.port}"')
-    
-    create_server_config(opt.ipaddr, opt.tun, opt.port, get_ext_ipaddr())
-    # sys.exit(0) is already called inside create_server_config()
-
-# Now load existing config for all other operations
-get_main_config_path(check = True)
+get_main_config_path(check=True)
 
 if opt.create:
     if os.path.exists(opt.tmpcfg):
         raise RuntimeError(f'ERROR: file "{opt.tmpcfg}" already exists!')
 
     print(f'Create template for client configs: "{opt.tmpcfg}"...')
-    os.remove(opt.tmpcfg) if os.path.exists(opt.tmpcfg) else None
+    if os.path.exists(opt.tmpcfg):
+        os.remove(opt.tmpcfg)
+
     if opt.ipaddr:
         ipaddr = opt.ipaddr
     else:
@@ -348,307 +533,208 @@ if opt.create:
     ipaddr = IPAddr(ipaddr)
     if ipaddr.mask:
         raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    
+
     print(f'Server IP-Addr: "{ipaddr}"')
-    
+
     out = g_defclient_config
     out = out.replace('<SERVER_ADDR>', str(ipaddr))
     if g_main_config_type != 'AWG':
-        out = out.replace('\nJc = <'  , '\n# ')
+        out = out.replace('\nJc = <', '\n# ')
         out = out.replace('\nJmin = <', '\n# ')
         out = out.replace('\nJmax = <', '\n# ')
-        out = out.replace('\nS1 = <'  , '\n# ')
-        out = out.replace('\nS2 = <'  , '\n# ')
-        out = out.replace('\nH1 = <'  , '\n# ')
-        out = out.replace('\nH2 = <'  , '\n# ')
-        out = out.replace('\nH3 = <'  , '\n# ')
-        out = out.replace('\nH4 = <'  , '\n# ')
-        
-    with open(opt.tmpcfg, 'w', newline = '\n') as file:
+        out = out.replace('\nS1 = <', '\n# ')
+        out = out.replace('\nS2 = <', '\n# ')
+        out = out.replace('\nH1 = <', '\n# ')
+        out = out.replace('\nH2 = <', '\n# ')
+        out = out.replace('\nH3 = <', '\n# ')
+        out = out.replace('\nH4 = <', '\n# ')
+
+    with open(opt.tmpcfg, 'w', newline='\n', encoding='utf8') as file:
         file.write(out)
-    
-    print(f'Template "{opt.tmpcfg}" created!')
+
+    print(f'Template client config file "{opt.tmpcfg}" created!')
     sys.exit(0)
 
 # -------------------------------------------------------------------------------------
 
-
-srv = ObjStorage()
-cfg = ObjStorage()
-cfg.peer = {}
-
-with open(g_main_config_fn, 'r') as file:
-    lines = file.readlines()
-
-comment_list = []
-current_section = None
-for ln in lines:
-    ln = ln.rstrip()
-    if ln.startswith('[Interface]'):
-        current_section = 'server'
-        continue
-    if ln.startswith('[Peer]'):
-        raise RuntimeError(f'ERROR: Unsupported config! Config must not contain [Peer] section!')
-    if ln.startswith('#'):
-        comment_list.append(ln)
-        continue
-    if not ln:
-        continue
-    if '=' not in ln:
-        continue
-    ar = ln.split('=', 1)
-    name = ar[0].strip()
-    value = ar[1].strip()
-
-    if current_section == 'server':
-        setattr(srv, name, value)
-
-peer = None
-for comment in comment_list:
-    if comment.startswith('#_Peer'):
-        ar = comment.split('=', 1)
-        value = ar[1].strip()
-        peer = ObjStorage()
-        peer.PublicKey = value
-        cfg.peer[value] = peer
-        continue
-
-    if comment.startswith('#_Name'):
-        ar = comment.split('=', 1)
-        value = ar[1].strip()
-        if peer:
-            peer.Name = value
-        continue
-
-    if comment.startswith('#_AllowedIPs'):
-        ar = comment.split('=', 1)
-        value = ar[1].strip()
-        if peer:
-            peer.AllowedIPs = value
-        continue
-
-# -------------------------------------------------------------------------------------
+xopt = [opt.addcl, opt.update, opt.delete]
+copt = [x for x in xopt if len(x) > 0]
+if copt and len(copt) >= 2:
+    raise RuntimeError('ERROR: Incorrect arguments! Too many actions!')
 
 if opt.addcl:
-    c_name = opt.addcl.strip()
-    if not re.match(r'^[a-zA-Z0-9_-]{1,63}$', c_name):
-        raise RuntimeError(f'ERROR: Invalid client name: {c_name}. Use only: a-z A-Z 0-9 _ -')
-    
-    print(f'Add client "{c_name}"...')
+    cfg = WGConfig(g_main_config_fn)
+    srv = cfg.iface
 
-    ipaddr = IPAddr(srv.Address)
-    ipaddr.calc_next()
-    
+    c_name = validate_client_name(opt.addcl.strip())
+
+    print(f'Add new client config "{c_name}"...')
+
+    max_addr = None
     for peer_name, peer in cfg.peer.items():
-        if 'AllowedIPs' not in peer:
-            continue
-        cip = IPAddr(peer['AllowedIPs'])
-        if cip.parts[3] >= ipaddr.parts[3]:
-            ipaddr.parts[3] = cip.parts[3] + 1
-    
-    ipaddr.mask = '32'
-    print(f'Client IP: {ipaddr}')
+        # prevent name collision (case-insensitive)
+        if peer_name.lower() == c_name.lower():
+            raise RuntimeError(f'ERROR: peer with name "{c_name}" already exists!')
 
-    priv_key, pub_key = genkey()
-    psk = genpsk()
+        if opt.ipaddr:
+            addr = IPAddr(opt.ipaddr)
+            addr.mask = None
+            addr = str(addr)
+            p_addr = IPAddr(peer['AllowedIPs'])
+            p_addr.mask = None
+            p_addr = str(p_addr)
+            if addr == p_addr:
+                raise RuntimeError(f'ERROR: IP-addr "{opt.ipaddr}" already used!')
 
-    srvcfg = '\n'
-    srvcfg += f'[Peer]\n'
-    srvcfg += f'PublicKey = {pub_key}\n'
-    srvcfg += f'PresharedKey = {psk}\n'
-    srvcfg += f'AllowedIPs = {ipaddr}\n'
-    srvcfg += f'#_GenKeyTime = {datetime.datetime.now().isoformat()}\n'
-    srvcfg += f'#_Peer = {pub_key}\n'
+        addr = IPAddr(peer['AllowedIPs'])
+        if not max_addr or addr.ip[3] > max_addr.ip[3]:
+            max_addr = addr
+
+    priv_key, pub_key = gen_pair_keys()
+
+    with open(g_main_config_fn, 'r', encoding='utf8') as file:
+        srvcfg = file.read()
+
+    if opt.ipaddr:
+        ipaddr = opt.ipaddr
+    else:
+        if max_addr is None:
+            max_addr = IPAddr(srv['Address'])
+            max_addr.ip[3] += 1
+            max_addr.mask = 32
+            ipaddr = str(max_addr)
+        else:
+            max_addr.ip[3] += 1
+            ipaddr = str(max_addr)
+
+        if max_addr.ip[3] >= 254:
+            raise RuntimeError('ERROR: There are no more free IP-addresses')
+
+    srvcfg += '\n'
+    srvcfg += '[Peer]\n'
     srvcfg += f'#_Name = {c_name}\n'
-    srvcfg += f'#_AllowedIPs = {ipaddr}\n'
+    srvcfg += f'#_GenKeyTime = {datetime.datetime.now().isoformat()}\n'
+    srvcfg += f'#_PrivateKey = {priv_key}\n'
+    srvcfg += f'PublicKey = {pub_key}\n'
+    srvcfg += f'AllowedIPs = {ipaddr}\n'
 
-    peer = ObjStorage()
-    peer.Name = c_name
-    peer.PublicKey = pub_key
-    peer.PrivateKey = priv_key
-    peer.PresharedKey = psk
-    peer.AllowedIPs = str(ipaddr)
-    cfg.peer[pub_key] = peer
-
-    with open(g_main_config_fn, 'a', newline = '\n') as file:
+    with open(g_main_config_fn, 'w', newline='\n', encoding='utf8') as file:
         file.write(srvcfg)
-    
-    print(f'Client "{c_name}" added to server config!')
 
-# -------------------------------------------------------------------------------------
+    print(f'New client "{c_name}" added! IP-Addr: "{ipaddr}"')
 
 if opt.update:
-    print(f'Update peer "{opt.update}"...')
-    peer_found = False
-    for peer_name, peer in cfg.peer.items():
-        if 'Name' not in peer:
-            continue
-        if peer['Name'] == opt.update:
-            peer_found = True
-            break
-    if not peer_found:
-        raise RuntimeError(f'ERROR: Peer "{opt.update}" not found!')
-    
-    priv_key, pub_key = genkey()
-    psk = genpsk()
-    
-    old_pub_key = peer.PublicKey
-    peer.PrivateKey = priv_key
-    peer.PublicKey = pub_key
-    peer.PresharedKey = psk
-    
-    with open(g_main_config_fn, 'r') as file:
-        lines = file.readlines()
-    
-    new_lines = []
-    peer_found = False
-    for ln in lines:
-        if ln.startswith('#_Peer') and old_pub_key in ln:
-            peer_found = True
-            new_lines.append(f'#_Peer = {pub_key}\n')
-            continue
-        if peer_found and ln.startswith('PublicKey'):
-            new_lines.append(f'PublicKey = {pub_key}\n')
-            continue
-        if peer_found and ln.startswith('PresharedKey'):
-            new_lines.append(f'PresharedKey = {psk}\n')
-            peer_found = False
-            continue
-        new_lines.append(ln)
-    
-    with open(g_main_config_fn, 'w', newline = '\n') as file:
-        file.writelines(new_lines)
-    
-    print(f'Peer "{opt.update}" updated!')
+    cfg = WGConfig(g_main_config_fn)
+    p_name = opt.update.strip()
+    # allow update by exact stored name; enforce safe input (prevents weird parsing)
+    validate_client_name(p_name)
 
-# -------------------------------------------------------------------------------------
+    print(f'Update keys for client "{p_name}"...')
+    priv_key, pub_key = gen_pair_keys()
+    cfg.set_param(p_name, '_PrivateKey', priv_key, force=True, offset=2)
+    cfg.set_param(p_name, 'PublicKey', pub_key)
+    gentime = datetime.datetime.now().isoformat()
+    cfg.set_param(p_name, '_GenKeyTime', gentime, force=True, offset=2)
+    ipaddr = cfg.peer[p_name]['AllowedIPs']
+    cfg.save()
+    print(f'Keys for client "{p_name}" updated! IP-Addr: "{ipaddr}"')
 
 if opt.delete:
-    print(f'Delete peer "{opt.delete}"...')
-    peer_found = False
-    for peer_name, peer in cfg.peer.items():
-        if 'Name' not in peer:
-            continue
-        if peer['Name'] == opt.delete:
-            peer_found = True
-            break
-    if not peer_found:
-        raise RuntimeError(f'ERROR: Peer "{opt.delete}" not found!')
-    
-    pub_key = peer.PublicKey
-    
-    with open(g_main_config_fn, 'r') as file:
-        lines = file.readlines()
-    
-    new_lines = []
-    skip_peer = False
-    for ln in lines:
-        if ln.startswith('#_Peer') and pub_key in ln:
-            skip_peer = True
-            continue
-        if skip_peer and ln.startswith('[Peer]'):
-            continue
-        if skip_peer and ln.startswith('PublicKey'):
-            continue
-        if skip_peer and ln.startswith('PresharedKey'):
-            continue
-        if skip_peer and ln.startswith('AllowedIPs'):
-            skip_peer = False
-            continue
-        if skip_peer and ln.startswith('#'):
-            continue
-        new_lines.append(ln)
-    
-    with open(g_main_config_fn, 'w', newline = '\n') as file:
-        file.writelines(new_lines)
-    
-    del cfg.peer[pub_key]
-    print(f'Peer "{opt.delete}" deleted!')
+    cfg = WGConfig(g_main_config_fn)
+    p_name = opt.delete.strip()
+    validate_client_name(p_name)
 
-# -------------------------------------------------------------------------------------
+    print(f'Delete client "{p_name}"...')
+    ipaddr = cfg.del_client(p_name)
+    cfg.save()
+    print(f'Client "{p_name}" deleted! IP-Addr: "{ipaddr}"')
 
 if opt.confgen:
-    if not os.path.exists(opt.tmpcfg):
-        raise RuntimeError(f'ERROR: Template file "{opt.tmpcfg}" not found!')
+    cfg = WGConfig(g_main_config_fn)
+    srv = cfg.iface
+    print('Generate client configs...')
 
-    with open(opt.tmpcfg, 'r') as file:
+    if not os.path.exists(opt.tmpcfg):
+        raise RuntimeError(f'ERROR: file "{opt.tmpcfg}" not found!')
+
+    with open(opt.tmpcfg, 'r', encoding='utf8') as file:
         tmpcfg = file.read()
 
-    print('Generate client configs...')
-    flst = glob.glob("*.conf")
-    for fn in flst:
-        if fn.endswith(g_main_config_fn):
+    main_base = os.path.basename(g_main_config_fn)
+
+    for fn in glob.glob("*.conf"):
+        if os.path.basename(fn) == main_base:
             continue
-        if fn.endswith(opt.tmpcfg):
+        if os.path.basename(fn) == os.path.basename(opt.tmpcfg):
             continue
         if os.path.exists(fn):
             os.remove(fn)
 
-    flst = glob.glob("*.png")
-    for fn in flst:
+    for fn in glob.glob("*.png"):
         if os.path.exists(fn):
             os.remove(fn)
 
-    random.seed()
-    
+    # AWG consistency: use server Jc/Jmin/Jmax if present (must match server)
+    server_jc = srv.get('Jc')
+    server_jmin = srv.get('Jmin')
+    server_jmax = srv.get('Jmax')
+
     for peer_name, peer in cfg.peer.items():
         if 'Name' not in peer or 'PrivateKey' not in peer:
-            print(f'Skip peer with pubkey "{peer["PublicKey"]}"')
+            # peer_name could be PublicKey in legacy cases
             continue
-        
+
         out = tmpcfg[:]
         out = out.replace('<CLIENT_PRIVATE_KEY>', peer['PrivateKey'])
         out = out.replace('<CLIENT_PUBLIC_KEY>', peer['PublicKey'])
         out = out.replace('<CLIENT_TUNNEL_IP>', peer['AllowedIPs'])
-        out = out.replace('<JC>', srv['Jc'])
-        out = out.replace('<JMIN>', srv['Jmin'])
-        out = out.replace('<JMAX>', srv['Jmax'])
-        out = out.replace('<S1>', srv['S1'])
-        out = out.replace('<S2>', srv['S2'])
-        out = out.replace('<H1>', srv['H1'])
-        out = out.replace('<H2>', srv['H2'])
-        out = out.replace('<H3>', srv['H3'])
-        out = out.replace('<H4>', srv['H4'])
-        out = out.replace('<SERVER_PORT>', srv['ListenPort'])
-        out = out.replace('<SERVER_PUBLIC_KEY>', srv['PublicKey'])
-        out = out.replace('<PRESHARED_KEY>', peer['PresharedKey'])
-        fn = f'{peer["Name"]}.conf'
-        with open(fn, 'w', newline = '\n') as file:
+
+        if server_jc and server_jmin and server_jmax:
+            out = out.replace('<JC>', str(server_jc))
+            out = out.replace('<JMIN>', str(server_jmin))
+            out = out.replace('<JMAX>', str(server_jmax))
+        else:
+            # fallback (keeps previous behavior if server doesn't have J params)
+            jc = secrets.randbelow(127 - 3 + 1) + 3
+            jmin = secrets.randbelow(700 - 3 + 1) + 3
+            jmax = secrets.randbelow(1270 - (jmin + 1) + 1) + (jmin + 1)
+            out = out.replace('<JC>', str(jc))
+            out = out.replace('<JMIN>', str(jmin))
+            out = out.replace('<JMAX>', str(jmax))
+
+        out = out.replace('<S1>', srv.get('S1', ''))
+        out = out.replace('<S2>', srv.get('S2', ''))
+        out = out.replace('<H1>', srv.get('H1', ''))
+        out = out.replace('<H2>', srv.get('H2', ''))
+        out = out.replace('<H3>', srv.get('H3', ''))
+        out = out.replace('<H4>', srv.get('H4', ''))
+        out = out.replace('<SERVER_PORT>', srv.get('ListenPort', ''))
+        out = out.replace('<SERVER_PUBLIC_KEY>', srv.get('PublicKey', ''))
+
+        name_stem = safe_filename(peer_name, fallback="peer")
+        fn = f'{name_stem}.conf'
+        with open(fn, 'w', newline='\n', encoding='utf8') as file:
             file.write(out)
 
 if opt.qrcode:
     print('Generate QR codes...')
-    flst = glob.glob("*.png")
-    for fn in flst:
+    main_base = os.path.basename(g_main_config_fn)
+
+    for fn in glob.glob("*.png"):
         if os.path.exists(fn):
             os.remove(fn)
 
-    try:
-        import qrcode
-    except:
-        print('ERROR: qrcode module not found!')
-        print('Install: pip install qrcode[pil]')
-        sys.exit(1)
-
     flst = glob.glob("*.conf")
+    flst = [fn for fn in flst if os.path.basename(fn) != main_base and os.path.basename(fn) != os.path.basename(opt.tmpcfg)]
+    if not flst:
+        raise RuntimeError('ERROR: client configs not founded!')
+
+    import qrcode
     for fn in flst:
-        if fn.endswith(g_main_config_fn):
-            continue
-        if fn.endswith(opt.tmpcfg):
-            continue
-        
-        print(f'Generate QR code for "{fn}"...')
-        
-        with open(fn, 'r') as file:
-            data = file.read()
-        
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
-        qr.add_data(data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        img.save(fn.replace('.conf', '.png'))
+        with open(fn, 'r', encoding='utf8') as file:
+            conf = file.read()
+        name = os.path.splitext(os.path.basename(fn))[0]
+        img = qrcode.make(conf)
+        img.save(f'{name}.png')
+
+print('===== OK =====')
