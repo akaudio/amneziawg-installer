@@ -6,6 +6,7 @@
 #   1. Fixed obfuscation parameter mismatch (clients now use server params for Jc/Jmin/Jmax)
 #   2. Using secrets module for crypto-safe PRNG
 #   3. Added client name validation
+#   4. Fixed logic: handle --make before reading config
 
 import os
 import sys
@@ -14,8 +15,8 @@ import subprocess
 import optparse
 import random
 import datetime
-import secrets  # PATCH: Added for crypto-safe random
-import re       # PATCH: Added for client name validation
+import secrets
+import re
 
 g_main_config_src = '.main.config'
 g_main_config_fn = None
@@ -252,7 +253,6 @@ def create_server_config(ipaddr, tun, port, ext_ipaddr):
     print(f'PrivateKey: {priv_key}')
     print(f'PublicKey: {pub_key}')
 
-    # PATCH: Use secrets module for crypto-safe random
     jc = secrets.randbelow(125) + 3
     jmin = secrets.randbelow(698) + 3
     jmax = secrets.randbelow(1270 - jmin - 1) + jmin + 1
@@ -264,7 +264,7 @@ def create_server_config(ipaddr, tun, port, ext_ipaddr):
     out = out.replace('<SERVER_ADDR>', str(m_ipaddr))
     out = out.replace('<SERVER_PORT>', str(port))
     out = out.replace('<INTERFACE>', m_tun)
-    out = out.replace('<ADAPTER>', 'ens6')  # default adapter
+    out = out.replace('<ADAPTER>', 'ens6')
     out = out.replace('<JC>', str(jc))
     out = out.replace('<JMIN>', str(jmin))
     out = out.replace('<JMAX>', str(jmax))
@@ -279,7 +279,6 @@ def create_server_config(ipaddr, tun, port, ext_ipaddr):
         out = out.replace('\nH3 = <'  , '\n# ')
         out = out.replace('\nH4 = <'  , '\n# ')
     else:
-        # PATCH: Use secrets module for crypto-safe random
         out = out.replace('<S1>', str(secrets.randbelow(125) + 3))
         out = out.replace('<S2>', str(secrets.randbelow(125) + 3))
         out = out.replace('<H1>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
@@ -297,9 +296,29 @@ def create_server_config(ipaddr, tun, port, ext_ipaddr):
     
     sys.exit(0)
 
-# -------------------------------------------------------------------------------------    
-if not opt.makecfg:
-    get_main_config_path(check = True)
+# -------------------------------------------------------------------------------------
+
+# CRITICAL FIX: Handle --make BEFORE reading config
+if opt.makecfg:
+    print(f'Make config "{opt.makecfg}"...')
+    
+    if not opt.ipaddr:
+        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
+    ipaddr = IPAddr(opt.ipaddr)
+    if not ipaddr.mask:
+        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
+    
+    if not opt.tun:
+        raise RuntimeError(f'ERROR: Incorrect argument tun = "{opt.tun}"')
+    
+    if not opt.port:
+        raise RuntimeError(f'ERROR: Incorrect argument port = "{opt.port}"')
+    
+    create_server_config(opt.ipaddr, opt.tun, opt.port, get_ext_ipaddr())
+    # sys.exit(0) is already called inside create_server_config()
+
+# Now load existing config for all other operations
+get_main_config_path(check = True)
 
 if opt.create:
     if os.path.exists(opt.tmpcfg):
@@ -394,28 +413,7 @@ for comment in comment_list:
 
 # -------------------------------------------------------------------------------------
 
-if opt.makecfg:
-    print(f'Make config "{g_main_config_fn}"...')
-    
-    if not opt.ipaddr:
-        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    ipaddr = IPAddr(opt.ipaddr)
-    if not ipaddr.mask:
-        raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
-    
-    if not opt.tun:
-        raise RuntimeError(f'ERROR: Incorrect argument tun = "{opt.tun}"')
-    
-    if not opt.port:
-        raise RuntimeError(f'ERROR: Incorrect argument port = "{opt.port}"')
-    
-    create_server_config(opt.ipaddr, opt.tun, opt.port, get_ext_ipaddr())
-    sys.exit(0)
-
-# -------------------------------------------------------------------------------------
-
 if opt.addcl:
-    # PATCH: Validate client name to prevent injection
     c_name = opt.addcl.strip()
     if not re.match(r'^[a-zA-Z0-9_-]{1,63}$', c_name):
         raise RuntimeError(f'ERROR: Invalid client name: {c_name}. Use only: a-z A-Z 0-9 _ -')
@@ -582,15 +580,13 @@ if opt.confgen:
             print(f'Skip peer with pubkey "{peer["PublicKey"]}"')
             continue
         
-        # CRITICAL PATCH: Use SERVER parameters instead of generating new random values
-        # This ensures all clients have SAME obfuscation parameters as server
         out = tmpcfg[:]
         out = out.replace('<CLIENT_PRIVATE_KEY>', peer['PrivateKey'])
         out = out.replace('<CLIENT_PUBLIC_KEY>', peer['PublicKey'])
         out = out.replace('<CLIENT_TUNNEL_IP>', peer['AllowedIPs'])
-        out = out.replace('<JC>', srv['Jc'])      # PATCH: Use server param
-        out = out.replace('<JMIN>', srv['Jmin'])  # PATCH: Use server param
-        out = out.replace('<JMAX>', srv['Jmax'])  # PATCH: Use server param
+        out = out.replace('<JC>', srv['Jc'])
+        out = out.replace('<JMIN>', srv['Jmin'])
+        out = out.replace('<JMAX>', srv['Jmax'])
         out = out.replace('<S1>', srv['S1'])
         out = out.replace('<S2>', srv['S2'])
         out = out.replace('<H1>', srv['H1'])
