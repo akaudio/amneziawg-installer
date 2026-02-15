@@ -298,8 +298,8 @@ def create_server_config(ipaddr, tun, port, ext_ipaddr):
     sys.exit(0)
 
 # -------------------------------------------------------------------------------------    
-
-get_main_config_path(check = True)
+if not opt.makecfg:
+    get_main_config_path(check = True)
 
 if opt.create:
     if os.path.exists(opt.tmpcfg):
