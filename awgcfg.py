@@ -1,28 +1,12 @@
-# SPDX-License-Identifier: MIT
-# Author: remittor <remittor@gmail.com>
-# Created: 2024
-#
-# Security patched + AWG consistency patched:
-#   - exec_cmd: no shell=True, commands are lists
-#   - secrets instead of random for obfuscation params
-#   - client name validation (prevents injection/path tricks)
-#   - safe filename for generated client configs
-#   - AWG: clients use server Jc/Jmin/Jmax (must match server)
-#   - do not hardcode awg0.conf when cleaning/generated files
-#   - g_main_config_src anchored to script directory
-
 import os
 import sys
 import glob
 import subprocess
 import optparse
+import random
 import datetime
-import secrets
-import re
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-g_main_config_src = os.path.join(SCRIPT_DIR, '.main.config')
+g_main_config_src = '.main.config'
 g_main_config_fn = None
 g_main_config_type = None
 
@@ -59,9 +43,9 @@ H2 = <H2>
 H3 = <H3>
 H4 = <H4>
 
-PostUp = iptables -A INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
+PostUp = iptables -A INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
 
-PostDown = iptables -D INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
+PostDown = iptables -D INPUT -p udp --dport <SERVER_PORT> -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_IFACE> -o <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i <SERVER_TUN> -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o <SERVER_IFACE> -j MASQUERADE --wait 10 --wait-interval 50
 """
 
 g_defclient_config = """
@@ -87,117 +71,7 @@ PersistentKeepalive = 60
 PublicKey = <SERVER_PUBLIC_KEY>
 """
 
-CLIENT_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,63}$')
-
-def validate_client_name(name: str):
-    if not name:
-        raise RuntimeError('ERROR: Empty client name')
-    if not CLIENT_NAME_RE.match(name):
-        raise RuntimeError('ERROR: Invalid client name. Use only: a-z A-Z 0-9 _ - (1..63)')
-    return name
-
-def safe_filename(stem: str, fallback: str = "peer") -> str:
-    # Make a safe file stem for Linux/Windows; do not allow paths
-    stem = stem.strip()
-    stem = stem.replace('\\', '_').replace('/', '_')
-    stem = re.sub(r'[^a-zA-Z0-9_-]+', '_', stem)
-    stem = stem.strip('_')
-    if not stem:
-        stem = fallback
-    return stem[:63]
-
-def exec_cmd(cmd, input=None, timeout=None):
-    # cmd must be a list[str]
-    proc = subprocess.run(
-        cmd,
-        input=input,
-        shell=False,
-        check=False,
-        timeout=timeout,
-        encoding='utf8',
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
-    )
-    return proc.returncode, proc.stdout
-
-def get_main_iface():
-    rc, out = exec_cmd(['ip', 'link', 'show'])
-    if rc:
-        raise RuntimeError('ERROR: Cannot get net interfaces')
-
-    for line in out.split('\n'):
-        # typical: "2: ens3: <BROADCAST,...> ... state UP ..."
-        if '<BROADCAST' in line and ('state UP' in line or ',UP,' in line or '<BROADCAST' in line):
-            xv = line.split(':', 2)
-            if len(xv) >= 2:
-                return xv[1].strip()
-    return None
-
-def get_ext_ipaddr():
-    rc, out = exec_cmd(['curl', '-4', '-s', 'icanhazip.com'])
-    if rc:
-        raise RuntimeError('ERROR: Cannot get ext IP-Addr')
-    ip = out.strip().splitlines()[-1].strip()
-    ipaddr = IPAddr(ip)
-    return str(ipaddr)
-
-def gen_pair_keys(cfg_type=None):
-    global g_main_config_type
-
-    if sys.platform == 'win32':
-        return 'client_priv_key', 'client_pub_key'
-
-    if not cfg_type:
-        cfg_type = g_main_config_type
-    if not cfg_type:
-        raise RuntimeError('ERROR: Cannot detect cfg_type')
-
-    wgtool = cfg_type.lower()  # "wg" or "awg"
-
-    rc, out = exec_cmd([wgtool, 'genkey'])
-    if rc:
-        raise RuntimeError('ERROR: Cannot generate private key')
-    priv_key = out.strip()
-    if not priv_key:
-        raise RuntimeError('ERROR: Cannot generate private Key')
-
-    rc, out = exec_cmd([wgtool, 'pubkey'], input=priv_key + '\n')
-    if rc:
-        raise RuntimeError('ERROR: Cannot generate public key')
-    pub_key = out.strip()
-    if not pub_key:
-        raise RuntimeError('ERROR: Cannot generate public Key')
-
-    return priv_key, pub_key
-
-def get_main_config_path(check=True):
-    global g_main_config_fn
-    global g_main_config_type
-
-    if not os.path.exists(g_main_config_src):
-        raise RuntimeError(f'ERROR: file "{g_main_config_src}" not found!')
-
-    with open(g_main_config_src, 'r', encoding='utf8') as file:
-        lines = file.readlines()
-
-    if not lines:
-        raise RuntimeError(f'ERROR: file "{g_main_config_src}" is empty!')
-
-    g_main_config_fn = lines[0].strip()
-    if not g_main_config_fn:
-        raise RuntimeError(f'ERROR: file "{g_main_config_src}" has empty path!')
-
-    cfg_exists = os.path.exists(g_main_config_fn)
-    g_main_config_type = 'WG'
-    if os.path.basename(g_main_config_fn).startswith('a'):
-        g_main_config_type = 'AWG'
-
-    if check and not cfg_exists:
-        raise RuntimeError(f'ERROR: Main {g_main_config_type} config file "{g_main_config_fn}" not found!')
-
-    return g_main_config_fn
-
-class IPAddr:
+class IPAddr():
     def __init__(self, ipaddr=None):
         self.ip = [0, 0, 0, 0]
         self.mask = None
@@ -208,7 +82,9 @@ class IPAddr:
         _ipaddr = ipaddr
         if not ipaddr:
             raise RuntimeError(f'ERROR: Incorrect IP-Addr: "{_ipaddr}"')
-        if ' ' in ipaddr or ',' in ipaddr:
+        if ' ' in ipaddr:
+            raise RuntimeError(f'ERROR: Incorrect IP-Addr: "{_ipaddr}"')
+        if ',' in ipaddr:
             raise RuntimeError(f'ERROR: Incorrect IP-Addr: "{_ipaddr}"')
         self.ip = [0, 0, 0, 0]
         self.mask = None
@@ -227,7 +103,7 @@ class IPAddr:
             out += '/' + str(self.mask)
         return out
 
-class WGConfig:
+class WGConfig():
     def __init__(self, filename=None):
         self.lines = []
         self.iface = {}
@@ -243,11 +119,11 @@ class WGConfig:
         self.iface = {}
         self.peer = {}
         self.idsline = {}
-
-        with open(filename, 'r', encoding='utf8') as file:
+        with open(filename, 'r') as file:
             lines = file.readlines()
 
         iface = None
+
         secdata = []
         secdata_item = None
         secline = []
@@ -298,8 +174,7 @@ class WGConfig:
                 raise RuntimeError(f'ERROR_CFG: Incorrect line into config: "{line}"  (#{n+1})')
 
             vname = line[:xv].strip()
-            value = line[xv + 3:].strip()
-
+            value = line[xv+3:].strip()
             if not secdata_item:
                 raise RuntimeError(f'ERROR_CFG: Parameter "{vname}" have unknown section! (#{n+1})')
 
@@ -311,7 +186,7 @@ class WGConfig:
             secline_item[vname] = n
 
         if not iface:
-            raise RuntimeError('ERROR_CFG: Cannot found section Interface!')
+            raise RuntimeError(f'ERROR_CFG: Cannot found section Interface!')
 
         for i, item in enumerate(secdata):
             line = secline[i]
@@ -320,9 +195,9 @@ class WGConfig:
                 self.iface = item
                 peer_name = "__this_server__"
                 if 'PublicKey' not in item:
-                    raise RuntimeError('ERROR_CFG: Cannot found PublicKey in Interface')
+                    raise RuntimeError(f'ERROR_CFG: Cannot found PublicKey in Interface')
                 if 'PrivateKey' not in item:
-                    raise RuntimeError('ERROR_CFG: Cannot found PrivateKey in Interface')
+                    raise RuntimeError(f'ERROR_CFG: Cannot found PrivateKey in Interface')
             else:
                 if 'Name' in item:
                     peer_name = item['Name']
@@ -362,9 +237,11 @@ class WGConfig:
     def save(self, filename=None):
         if not filename:
             filename = self.cfg_fn
+
         if not self.lines:
-            raise RuntimeError('ERROR: no data')
-        with open(filename, 'w', newline='\n', encoding='utf8') as file:
+            raise RuntimeError(f'ERROR: no data')
+
+        with open(filename, 'w', newline='\n') as file:
             for line in self.lines:
                 file.write(line + '\n')
 
@@ -375,7 +252,7 @@ class WGConfig:
         client = self.peer[c_name]
         ipaddr = client['AllowedIPs']
         min_line, max_line = client['_lines_range']
-        del self.lines[min_line:max_line + 1]
+        del self.lines[min_line:max_line+1]
         del self.peer[c_name]
         secsize = max_line - min_line + 1
         del_list = []
@@ -417,7 +294,7 @@ class WGConfig:
             raise RuntimeError(f'ERROR: Incorrect offset value = {offset} (secsize = {secsize})')
 
         pos = max_line + 1 if offset <= 0 else min_line + offset
-        for k, v in list(self.idsline.items()):
+        for k, v in self.idsline.items():
             if v >= pos:
                 self.idsline[k] = v + 1
 
@@ -425,7 +302,86 @@ class WGConfig:
         self.lines.insert(pos, new_line)
         return
 
-# -------------------------------------------------------------------------------------
+def exec_cmd(cmd, input=None, shell=True, check=True, timeout=None):
+    proc = subprocess.run(cmd, input=input, shell=shell, check=check,
+                          timeout=timeout, encoding='utf8',
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    rc = proc.returncode
+    out = proc.stdout
+    return rc, out
+
+def get_main_iface():
+    rc, out = exec_cmd('ip link show')
+    if rc:
+        raise RuntimeError(f'ERROR: Cannot get net interfaces')
+
+    for line in out.split('\n'):
+        if '<BROADCAST' in line and 'state UP' in line:
+            xv = line.split(':')
+            return xv[1].strip()
+
+    return None
+
+def get_ext_ipaddr():
+    rc, out = exec_cmd('curl -4 -s icanhazip.com')
+    if rc:
+        raise RuntimeError(f'ERROR: Cannot get ext IP-Addr')
+
+    lines = out.split('\n')
+    ipaddr = lines[-1] if lines[-1] else lines[-2]
+    ipaddr = IPAddr(ipaddr)
+    return str(ipaddr)
+
+def gen_pair_keys(cfg_type=None):
+    global g_main_config_type
+    if sys.platform == 'win32':
+        return 'client_priv_key', 'client_pub_key'
+
+    if not cfg_type:
+        cfg_type = g_main_config_type
+
+    if not cfg_type:
+        raise
+
+    wgtool = cfg_type.lower()
+    rc, out = exec_cmd(f'{wgtool} genkey')
+    if rc:
+        raise RuntimeError(f'ERROR: Cannot generate private key')
+
+    priv_key = out.strip()
+    if not priv_key:
+        raise RuntimeError(f'ERROR: Cannot generate private Key')
+
+    rc, out = exec_cmd(f'{wgtool} pubkey', input=priv_key + '\n')
+    if rc:
+        raise RuntimeError(f'ERROR: Cannot generate public key')
+
+    pub_key = out.strip()
+    if not pub_key:
+        raise RuntimeError(f'ERROR: Cannot generate public Key')
+
+    return priv_key, pub_key
+
+def get_main_config_path(check=True):
+    global g_main_config_fn
+    global g_main_config_type
+    if not os.path.exists(g_main_config_src):
+        raise RuntimeError(f'ERROR: file "{g_main_config_src}" not found!')
+
+    with open(g_main_config_src, 'r') as file:
+        lines = file.readlines()
+
+    g_main_config_fn = lines[0].strip()
+    cfg_exists = os.path.exists(g_main_config_fn)
+    g_main_config_type = 'WG'
+    if os.path.basename(g_main_config_fn).startswith('a'):
+        g_main_config_type = 'AWG'
+
+    if check:
+        if not cfg_exists:
+            raise RuntimeError(f'ERROR: Main {g_main_config_type} config file "{g_main_config_fn}" not found!')
+
+    return g_main_config_fn
 
 if opt.makecfg:
     g_main_config_fn = opt.makecfg
@@ -439,11 +395,11 @@ if opt.makecfg:
     print(f'Make {m_cfg_type} server config: "{g_main_config_fn}"...')
     main_iface = get_main_iface()
     if not main_iface:
-        raise RuntimeError('ERROR: Cannot get main network interface!')
+        raise RuntimeError(f'ERROR: Cannot get main network interface!')
 
     print(f'Main network iface: "{main_iface}"')
 
-    if opt.port is None or opt.port <= 1000 or opt.port > 65530:
+    if opt.port <= 1000 or opt.port > 65530:
         raise RuntimeError(f'ERROR: Incorrect argument port = {opt.port}')
 
     if not opt.ipaddr:
@@ -454,21 +410,19 @@ if opt.makecfg:
         raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
 
     if opt.tun:
-        tun_name = opt.tun.strip()
+        tun_name = opt.tun
     else:
         cfg_name = os.path.basename(g_main_config_fn)
         tun_name = os.path.splitext(cfg_name)[0].strip()
-
-    if not tun_name or ' ' in tun_name or '/' in tun_name or '\\' in tun_name:
-        raise RuntimeError(f'ERROR: Incorrect tun name: "{tun_name}"')
 
     print(f'Tunnel iface: "{tun_name}"')
 
     priv_key, pub_key = gen_pair_keys(m_cfg_type)
 
-    jc = secrets.randbelow(127 - 3 + 1) + 3
-    jmin = secrets.randbelow(700 - 3 + 1) + 3
-    jmax = secrets.randbelow(1270 - (jmin + 1) + 1) + (jmin + 1)
+    random.seed()
+    jc = random.randint(3, 127)
+    jmin = random.randint(3, 700)
+    jmax = random.randint(jmin+1, 1270)
 
     out = g_defserver_config
     out = out.replace('<SERVER_KEY_TIME>', datetime.datetime.now().isoformat())
@@ -476,17 +430,16 @@ if opt.makecfg:
     out = out.replace('<SERVER_PUBLIC_KEY>', pub_key)
     out = out.replace('<SERVER_ADDR>', str(ipaddr))
     out = out.replace('<SERVER_PORT>', str(opt.port))
-
     if m_cfg_type == 'AWG':
         out = out.replace('<JC>', str(jc))
         out = out.replace('<JMIN>', str(jmin))
         out = out.replace('<JMAX>', str(jmax))
-        out = out.replace('<S1>', str(secrets.randbelow(127 - 3 + 1) + 3))
-        out = out.replace('<S2>', str(secrets.randbelow(127 - 3 + 1) + 3))
-        out = out.replace('<H1>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
-        out = out.replace('<H2>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
-        out = out.replace('<H3>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
-        out = out.replace('<H4>', str(secrets.randbelow(0x7FFFFF00 - 0x10000011 + 1) + 0x10000011))
+        out = out.replace('<S1>', str(random.randint(3, 127)))
+        out = out.replace('<S2>', str(random.randint(3, 127)))
+        out = out.replace('<H1>', str(random.randint(0x10000011, 0x7FFFFF00)))
+        out = out.replace('<H2>', str(random.randint(0x10000011, 0x7FFFFF00)))
+        out = out.replace('<H3>', str(random.randint(0x10000011, 0x7FFFFF00)))
+        out = out.replace('<H4>', str(random.randint(0x10000011, 0x7FFFFF00)))
     else:
         out = out.replace('\nJc = <', '\n# ')
         out = out.replace('\nJmin = <', '\n# ')
@@ -501,17 +454,15 @@ if opt.makecfg:
     out = out.replace('<SERVER_IFACE>', main_iface)
     out = out.replace('<SERVER_TUN>', tun_name)
 
-    with open(g_main_config_fn, 'w', newline='\n', encoding='utf8') as file:
+    with open(g_main_config_fn, 'w', newline='\n') as file:
         file.write(out)
 
     print(f'{m_cfg_type} server config file "{g_main_config_fn}" created!')
 
-    with open(g_main_config_src, 'w', newline='\n', encoding='utf8') as file:
+    with open(g_main_config_src, 'w', newline='\n') as file:
         file.write(g_main_config_fn)
 
     sys.exit(0)
-
-# -------------------------------------------------------------------------------------
 
 get_main_config_path(check=True)
 
@@ -520,9 +471,7 @@ if opt.create:
         raise RuntimeError(f'ERROR: file "{opt.tmpcfg}" already exists!')
 
     print(f'Create template for client configs: "{opt.tmpcfg}"...')
-    if os.path.exists(opt.tmpcfg):
-        os.remove(opt.tmpcfg)
-
+    os.remove(opt.tmpcfg) if os.path.exists(opt.tmpcfg) else None
     if opt.ipaddr:
         ipaddr = opt.ipaddr
     else:
@@ -549,30 +498,24 @@ if opt.create:
         out = out.replace('\nH3 = <', '\n# ')
         out = out.replace('\nH4 = <', '\n# ')
 
-    with open(opt.tmpcfg, 'w', newline='\n', encoding='utf8') as file:
+    with open(opt.tmpcfg, 'w', newline='\n') as file:
         file.write(out)
 
     print(f'Template client config file "{opt.tmpcfg}" created!')
     sys.exit(0)
 
-# -------------------------------------------------------------------------------------
-
 xopt = [opt.addcl, opt.update, opt.delete]
 copt = [x for x in xopt if len(x) > 0]
 if copt and len(copt) >= 2:
-    raise RuntimeError('ERROR: Incorrect arguments! Too many actions!')
+    raise RuntimeError(f'ERROR: Incorrect arguments! Too many actions!')
 
 if opt.addcl:
     cfg = WGConfig(g_main_config_fn)
     srv = cfg.iface
-
-    c_name = validate_client_name(opt.addcl.strip())
-
+    c_name = opt.addcl
     print(f'Add new client config "{c_name}"...')
-
     max_addr = None
     for peer_name, peer in cfg.peer.items():
-        # prevent name collision (case-insensitive)
         if peer_name.lower() == c_name.lower():
             raise RuntimeError(f'ERROR: peer with name "{c_name}" already exists!')
 
@@ -592,8 +535,9 @@ if opt.addcl:
 
     priv_key, pub_key = gen_pair_keys()
 
-    with open(g_main_config_fn, 'r', encoding='utf8') as file:
+    with open(g_main_config_fn, 'rb') as file:
         srvcfg = file.read()
+        srvcfg = srvcfg.decode('utf8')
 
     if opt.ipaddr:
         ipaddr = opt.ipaddr
@@ -606,29 +550,25 @@ if opt.addcl:
         else:
             max_addr.ip[3] += 1
             ipaddr = str(max_addr)
-
         if max_addr.ip[3] >= 254:
-            raise RuntimeError('ERROR: There are no more free IP-addresses')
+            raise RuntimeError(f'ERROR: There are no more free IP-addresses')
 
-    srvcfg += '\n'
-    srvcfg += '[Peer]\n'
+    srvcfg += f'\n'
+    srvcfg += f'[Peer]\n'
     srvcfg += f'#_Name = {c_name}\n'
     srvcfg += f'#_GenKeyTime = {datetime.datetime.now().isoformat()}\n'
     srvcfg += f'#_PrivateKey = {priv_key}\n'
     srvcfg += f'PublicKey = {pub_key}\n'
     srvcfg += f'AllowedIPs = {ipaddr}\n'
 
-    with open(g_main_config_fn, 'w', newline='\n', encoding='utf8') as file:
+    with open(g_main_config_fn, 'w', newline='\n') as file:
         file.write(srvcfg)
 
     print(f'New client "{c_name}" added! IP-Addr: "{ipaddr}"')
 
 if opt.update:
     cfg = WGConfig(g_main_config_fn)
-    p_name = opt.update.strip()
-    # allow update by exact stored name; enforce safe input (prevents weird parsing)
-    validate_client_name(p_name)
-
+    p_name = opt.update
     print(f'Update keys for client "{p_name}"...')
     priv_key, pub_key = gen_pair_keys()
     cfg.set_param(p_name, '_PrivateKey', priv_key, force=True, offset=2)
@@ -641,9 +581,7 @@ if opt.update:
 
 if opt.delete:
     cfg = WGConfig(g_main_config_fn)
-    p_name = opt.delete.strip()
-    validate_client_name(p_name)
-
+    p_name = opt.delete
     print(f'Delete client "{p_name}"...')
     ipaddr = cfg.del_client(p_name)
     cfg.save()
@@ -657,83 +595,74 @@ if opt.confgen:
     if not os.path.exists(opt.tmpcfg):
         raise RuntimeError(f'ERROR: file "{opt.tmpcfg}" not found!')
 
-    with open(opt.tmpcfg, 'r', encoding='utf8') as file:
+    with open(opt.tmpcfg, 'r') as file:
         tmpcfg = file.read()
 
-    main_base = os.path.basename(g_main_config_fn)
-
-    for fn in glob.glob("*.conf"):
-        if os.path.basename(fn) == main_base:
-            continue
-        if os.path.basename(fn) == os.path.basename(opt.tmpcfg):
+    flst = glob.glob("*.conf")
+    for fn in flst:
+        if fn.endswith('awg0.conf'):
             continue
         if os.path.exists(fn):
             os.remove(fn)
 
-    for fn in glob.glob("*.png"):
+    flst = glob.glob("*.png")
+    for fn in flst:
         if os.path.exists(fn):
             os.remove(fn)
 
-    # AWG consistency: use server Jc/Jmin/Jmax if present (must match server)
-    server_jc = srv.get('Jc')
-    server_jmin = srv.get('Jmin')
-    server_jmax = srv.get('Jmax')
+    jc_srv = None
+    jmin_srv = None
+    jmax_srv = None
+    if g_main_config_type == 'AWG':
+        if 'Jc' not in srv or 'Jmin' not in srv or 'Jmax' not in srv:
+            raise RuntimeError('ERROR: AWG server config has no Jc/Jmin/Jmax in [Interface]')
+        jc_srv = srv['Jc']
+        jmin_srv = srv['Jmin']
+        jmax_srv = srv['Jmax']
 
     for peer_name, peer in cfg.peer.items():
         if 'Name' not in peer or 'PrivateKey' not in peer:
-            # peer_name could be PublicKey in legacy cases
+            print(f'Skip peer with pubkey "{peer["PublicKey"]}"')
             continue
-
         out = tmpcfg[:]
         out = out.replace('<CLIENT_PRIVATE_KEY>', peer['PrivateKey'])
         out = out.replace('<CLIENT_PUBLIC_KEY>', peer['PublicKey'])
         out = out.replace('<CLIENT_TUNNEL_IP>', peer['AllowedIPs'])
-
-        if server_jc and server_jmin and server_jmax:
-            out = out.replace('<JC>', str(server_jc))
-            out = out.replace('<JMIN>', str(server_jmin))
-            out = out.replace('<JMAX>', str(server_jmax))
-        else:
-            # fallback (keeps previous behavior if server doesn't have J params)
-            jc = secrets.randbelow(127 - 3 + 1) + 3
-            jmin = secrets.randbelow(700 - 3 + 1) + 3
-            jmax = secrets.randbelow(1270 - (jmin + 1) + 1) + (jmin + 1)
-            out = out.replace('<JC>', str(jc))
-            out = out.replace('<JMIN>', str(jmin))
-            out = out.replace('<JMAX>', str(jmax))
-
-        out = out.replace('<S1>', srv.get('S1', ''))
-        out = out.replace('<S2>', srv.get('S2', ''))
-        out = out.replace('<H1>', srv.get('H1', ''))
-        out = out.replace('<H2>', srv.get('H2', ''))
-        out = out.replace('<H3>', srv.get('H3', ''))
-        out = out.replace('<H4>', srv.get('H4', ''))
-        out = out.replace('<SERVER_PORT>', srv.get('ListenPort', ''))
-        out = out.replace('<SERVER_PUBLIC_KEY>', srv.get('PublicKey', ''))
-
-        name_stem = safe_filename(peer_name, fallback="peer")
-        fn = f'{name_stem}.conf'
-        with open(fn, 'w', newline='\n', encoding='utf8') as file:
+        if g_main_config_type == 'AWG':
+            out = out.replace('<JC>', str(jc_srv))
+            out = out.replace('<JMIN>', str(jmin_srv))
+            out = out.replace('<JMAX>', str(jmax_srv))
+        out = out.replace('<S1>', srv['S1'])
+        out = out.replace('<S2>', srv['S2'])
+        out = out.replace('<H1>', srv['H1'])
+        out = out.replace('<H2>', srv['H2'])
+        out = out.replace('<H3>', srv['H3'])
+        out = out.replace('<H4>', srv['H4'])
+        out = out.replace('<SERVER_PORT>', srv['ListenPort'])
+        out = out.replace('<SERVER_PUBLIC_KEY>', srv['PublicKey'])
+        fn = f'{peer_name}.conf'
+        with open(fn, 'w', newline='\n') as file:
             file.write(out)
 
 if opt.qrcode:
     print('Generate QR codes...')
-    main_base = os.path.basename(g_main_config_fn)
-
-    for fn in glob.glob("*.png"):
+    flst = glob.glob("*.png")
+    for fn in flst:
         if os.path.exists(fn):
             os.remove(fn)
 
     flst = glob.glob("*.conf")
-    flst = [fn for fn in flst if os.path.basename(fn) != main_base and os.path.basename(fn) != os.path.basename(opt.tmpcfg)]
     if not flst:
-        raise RuntimeError('ERROR: client configs not founded!')
+        raise RuntimeError(f'ERROR: client configs not founded!')
 
     import qrcode
     for fn in flst:
-        with open(fn, 'r', encoding='utf8') as file:
+        if fn.endswith('awg0.conf'):
+            continue
+        with open(fn, 'rb') as file:
             conf = file.read()
-        name = os.path.splitext(os.path.basename(fn))[0]
+        conf = conf.decode('utf8')
+        name = os.path.splitext(fn)[0]
         img = qrcode.make(conf)
         img.save(f'{name}.png')
 
