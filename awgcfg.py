@@ -7,6 +7,7 @@
 #   2. Using secrets module for crypto-safe PRNG
 #   3. Added client name validation
 #   4. Fixed logic: handle --make before reading config
+#   5. Auto-extract tun name from config path if not provided
 
 import os
 import sys
@@ -308,8 +309,19 @@ if opt.makecfg:
     if not ipaddr.mask:
         raise RuntimeError(f'ERROR: Incorrect argument ipaddr = "{opt.ipaddr}"')
     
+    # FIX: Extract tun from config path if not provided
     if not opt.tun:
-        raise RuntimeError(f'ERROR: Incorrect argument tun = "{opt.tun}"')
+        # /etc/amnezia/amneziawg/awg0.conf -> awg0.conf -> awg0
+        config_basename = os.path.basename(opt.makecfg)
+        tun_name = config_basename.replace('.conf', '')
+        # awg0 -> 0
+        if tun_name.startswith('awg'):
+            opt.tun = tun_name[3:]  # Extract "0" from "awg0"
+        elif tun_name.startswith('wg'):
+            opt.tun = tun_name[2:]  # Extract "0" from "wg0"
+        else:
+            raise RuntimeError(f'ERROR: Cannot extract tun from config path: {opt.makecfg}')
+        print(f'Auto-detected tun interface: {tun_name} (tun={opt.tun})')
     
     if not opt.port:
         raise RuntimeError(f'ERROR: Incorrect argument port = "{opt.port}"')
@@ -369,6 +381,7 @@ with open(g_main_config_fn, 'r') as file:
     lines = file.readlines()
 
 comment_list = []
+current_section = None
 for ln in lines:
     ln = ln.rstrip()
     if ln.startswith('[Interface]'):
@@ -390,6 +403,7 @@ for ln in lines:
     if current_section == 'server':
         setattr(srv, name, value)
 
+peer = None
 for comment in comment_list:
     if comment.startswith('#_Peer'):
         ar = comment.split('=', 1)
@@ -402,13 +416,15 @@ for comment in comment_list:
     if comment.startswith('#_Name'):
         ar = comment.split('=', 1)
         value = ar[1].strip()
-        peer.Name = value
+        if peer:
+            peer.Name = value
         continue
 
     if comment.startswith('#_AllowedIPs'):
         ar = comment.split('=', 1)
         value = ar[1].strip()
-        peer.AllowedIPs = value
+        if peer:
+            peer.AllowedIPs = value
         continue
 
 # -------------------------------------------------------------------------------------
